@@ -118,6 +118,9 @@ class OffloadedLSHStaticCache(StaticCache):
             self._device_value_cache.append(value_cache)
 
         # TODO(mliu) add LSH hash table for keys
+        lsh_dim = 8
+        proj_mat_shape = (head_dim, lsh_dim)
+        self.proj_mat = torch.randn(proj_mat_shape, device=self.device, dtype=self.dtype)
         self._device_key_hash: List[torch.Tensor] = []
 
         # For backwards compatibility.
@@ -285,12 +288,33 @@ class OffloadedLSHStaticCache(StaticCache):
         else:
             self._prefetch_layer_in_context(layer_idx)
 
-        # TODO(mliu) prefetch selectively based on LSH hash hamming distance
-        
 
-
+    # TODO: pass in the current key hash as argument
     def _prefetch_layer_in_context(self, layer_idx: int) -> None:
         """Performs the actual copy of the layer to device cache."""
 
-        self._device_key_cache[layer_idx & 1].copy_(self.key_cache[layer_idx], non_blocking=True)
-        self._device_value_cache[layer_idx & 1].copy_(self.value_cache[layer_idx], non_blocking=True)
+        # MLIU: old code
+        # self._device_key_cache[layer_idx & 1].copy_(self.key_cache[layer_idx], non_blocking=True)
+        # self._device_value_cache[layer_idx & 1].copy_(self.value_cache[layer_idx], non_blocking=True)
+
+        # TODO(mliu) prefetch selectively based on LSH hash hamming distance
+        hamming_distances = self._hamming_dist(self._hash_fn(self.key_cache[layer_idx]), current_key_hash)
+        # sort the distances based on the hash table
+        sorted_indices = torch.argsort(hamming_distances)
+        # take the top max_cache_shape indices
+        top_indices = sorted_indices[:self.get_max_cache_shape()]
+        # copy the top indices to the device cache
+        self._device_key_cache[layer_idx & 1].index_copy_(2, top_indices, self.key_cache[layer_idx], non_blocking=True)
+        self._device_value_cache[layer_idx & 1].index_copy_(2, top_indices, self.value_cache[layer_idx], non_blocking=True)
+
+
+    def _hash_fn(self, key_states: torch.Tensor) -> torch.Tensor:
+        """Hash function to be used for LSH cache."""
+        proj = torch.matmul(key_states, self.proj_mat)
+        # use sign() and convert to binary (dtype=int)
+        return ((proj.sign() + 1) // 2).to(torch.int)
+    
+    def _hamming_dist(self, hash1: torch.Tensor, hash2: torch.Tensor) -> torch.Tensor:
+        """Calculate the hamming distance between two hash tensors."""
+        return torch.sum(hash1 != hash2, dim=-1)
+    

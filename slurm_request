@@ -1,0 +1,1 @@
+srun --pty --gres=gpu:a100 --mem=32gb --time=02:00:00 --account=scavenger --partition=scavenger --qos=scavenger bash
