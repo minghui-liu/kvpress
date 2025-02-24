@@ -2,8 +2,11 @@
 # SPDX-License-Identifier: Apache-2.0
 
 
+from kvpress.attention_patch import patch_attention_functions
 from kvpress.pipeline import KVPressTextGenerationPipeline
+from kvpress.presses.adakv_press import AdaKVPress
 from kvpress.presses.base_press import BasePress
+from kvpress.presses.chunk_press import ChunkPress
 from kvpress.presses.composed_press import ComposedPress
 from kvpress.presses.expected_attention_press import ExpectedAttentionPress
 from kvpress.presses.key_rerotation_press import KeyRerotationPress
@@ -17,8 +20,16 @@ from kvpress.presses.snapkv_press import SnapKVPress
 from kvpress.presses.streaming_llm_press import StreamingLLMPress
 from kvpress.presses.think_press import ThinKPress
 from kvpress.presses.tova_press import TOVAPress
+from kvpress.presses.criticalkv_press import CriticalKVPress, CriticalAdaKVPress
+from kvpress.presses.duo_attention_press import DuoAttentionPress
+
+# Patch the attention functions to support head-wise compression
+patch_attention_functions()
 
 __all__ = [
+    "CriticalAdaKVPress",
+    "CriticalKVPress",
+    "AdaKVPress",
     "BasePress",
     "ComposedPress",
     "ScorerPress",
@@ -34,4 +45,6 @@ __all__ = [
     "KVPressTextGenerationPipeline",
     "PerLayerCompressionPress",
     "KeyRerotationPress",
+    "ChunkPress",
+    "DuoAttentionPress",
 ]

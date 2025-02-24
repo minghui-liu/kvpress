@@ -17,12 +17,18 @@ from transformers import pipeline
 from zero_scrolls.calculate_metrics import calculate_metrics as zero_scrolls_scorer
 
 from kvpress import (
+    CriticalKVPress,
+    CriticalAdaKVPress,
+    AdaKVPress,
     ExpectedAttentionPress,
     KnormPress,
     ObservedAttentionPress,
     RandomPress,
     SnapKVPress,
     StreamingLLMPress,
+    ThinKPress,
+    TOVAPress,
+    DuoAttentionPress,
 )
 
 logger = logging.getLogger(__name__)
@@ -42,12 +48,22 @@ SCORER_DICT = {
 }
 
 PRESS_DICT = {
+    "criti_adasnapkv": CriticalAdaKVPress(SnapKVPress()),
+    "criti_ada_expected_attention": CriticalAdaKVPress(ExpectedAttentionPress(use_vnorm=False)),
+    "criti_snapkv": CriticalKVPress(SnapKVPress()),
+    "criti_expected_attention": CriticalKVPress(ExpectedAttentionPress(use_vnorm=False)),
+    "adasnapkv": AdaKVPress(SnapKVPress()),
+    "ada_expected_attention": AdaKVPress(ExpectedAttentionPress()),
     "expected_attention": ExpectedAttentionPress(),
+    "ada_expected_attention_e2": AdaKVPress(ExpectedAttentionPress(epsilon=1e-2)),
     "knorm": KnormPress(),
     "observed_attention": ObservedAttentionPress(),
     "random": RandomPress(),
     "snapkv": SnapKVPress(),
     "streaming_llm": StreamingLLMPress(),
+    "think": ThinKPress(),
+    "tova": TOVAPress(),
+    "duo_attention": DuoAttentionPress(),
 }
 
 
@@ -110,6 +126,12 @@ def evaluate(
     df = load_dataset(DATASET_DICT[dataset], data_dir=data_dir, split="test").to_pandas()
     if fraction < 1.0:
         df = df.sample(frac=fraction, random_state=42)
+        save_filename = save_filename.with_name(save_filename.stem + f"__fraction{fraction:.2f}" + save_filename.suffix)
+
+    if max_context_length is not None:
+        save_filename = save_filename.with_name(
+            save_filename.stem + f"__max_context{max_context_length}" + save_filename.suffix
+        )
 
     if compress_questions:
         df["context"] = df["context"] + df["question"]
@@ -119,27 +141,28 @@ def evaluate(
     # Load press
     assert press_name in PRESS_DICT
     press = PRESS_DICT[press_name]
-    press.compression_ratio = compression_ratio
+
+    if isinstance(press, (DuoAttentionPress)):
+        press.head_compression_ratio = compression_ratio
+    else:
+        press.compression_ratio = compression_ratio  # type:ignore[attr-defined]
 
     # Initialize pipeline with the correct attention implementation
+    model_kwargs = {"torch_dtype": "auto"}
     if isinstance(press, ObservedAttentionPress):
-        model_kwargs = {"attn_implementation": "eager"}
+        model_kwargs["attn_implementation"] = "eager"
     else:
         try:
             import flash_attn  # noqa: F401
 
-            model_kwargs = {"attn_implementation": "flash_attention_2"}
+            model_kwargs["attn_implementation"] = "flash_attention_2"
         except ImportError:
-            model_kwargs = {}
+            pass
 
     if device == "auto":
-        pipe = pipeline(
-            "kv-press-text-generation", model=model, device_map="auto", torch_dtype="auto", model_kwargs=model_kwargs
-        )
+        pipe = pipeline("kv-press-text-generation", model=model, device_map="auto", model_kwargs=model_kwargs)
     else:
-        pipe = pipeline(
-            "kv-press-text-generation", model=model, device=device, torch_dtype="auto", model_kwargs=model_kwargs
-        )
+        pipe = pipeline("kv-press-text-generation", model=model, device=device, model_kwargs=model_kwargs)
 
     # Run pipeline on each context
     df["predicted_answer"] = None
@@ -159,16 +182,18 @@ def evaluate(
             max_context_length=max_context_length,
         )
         df.loc[df_.index, "predicted_answer"] = output["answers"]
+        df.loc[df_.index, "compression_ratio"] = press.compression_ratio  # type:ignore[attr-defined]
         torch.cuda.empty_cache()
 
     # Save answers
-    df["predicted_answer"].to_csv(str(save_filename), index=False)
+    df[["predicted_answer", "compression_ratio"]].to_csv(str(save_filename), index=False)
 
     # Calculate metrics
     scorer = SCORER_DICT[dataset]
     metrics = scorer(df)
     with open(str(save_filename).replace(".csv", ".json"), "w") as f:
         json.dump(metrics, f)
+    print(f"Average compression ratio: {df['compression_ratio'].mean():.2f}")
     print(metrics)
 
 

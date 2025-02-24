@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 
-import inspect
 import math
 from dataclasses import dataclass
 
@@ -23,7 +22,7 @@ class ExpectedAttentionPress(ScorerPress):
         3. Apply R to the mean and covariance matrice of the queries.
         4. As attention A = exp(Q @ K / sqrt(d)), we compute the expected attention
         E(A) = exp(K @ mean.T / sqrt(d) + 1/2 K @ cov @ K.T / d)
-        5. Rescale the scores by the norm of the values
+        5. Rescale the scores using (scores + epsilon) * ||V||_2
     The first n_sink tokens are removed from calculations (sink attention phenomenon).
     """
 
@@ -32,6 +31,7 @@ class ExpectedAttentionPress(ScorerPress):
     n_sink: int = 4
     use_covariance: bool = True
     use_vnorm: bool = True
+    epsilon: float = 0.0
 
     def get_query_statistics(self, module: nn.Module, hidden_states: torch.Tensor):
         """
@@ -39,7 +39,7 @@ class ExpectedAttentionPress(ScorerPress):
         """
 
         bsz, q_len, _ = hidden_states.shape
-        n, d = module.num_heads, module.head_dim
+        n, d = module.config.num_attention_heads, module.head_dim
 
         # Remove first hidden_states that likely contain outliers
         h = hidden_states[:, self.n_sink :]
@@ -47,7 +47,7 @@ class ExpectedAttentionPress(ScorerPress):
         if hasattr(module, "q_proj"):
             Wq = module.q_proj.weight
         elif hasattr(module, "qkv_proj"):
-            Wq = module.qkv_proj.weight[: n * d]
+            Wq = module.qkv_proj.weight[: n * d]  # type: ignore[index]
         else:
             raise NotImplementedError(f"ExpectedAttentionPress not yet implemented for {module.__class__}.")
 
@@ -66,13 +66,9 @@ class ExpectedAttentionPress(ScorerPress):
             cov = cov.permute(0, 3, 1, 2)
 
         # RoPE rotation matrix on next n_future_positions
-        if "position_ids" in inspect.signature(module.rotary_emb.forward).parameters:
-            position_ids = torch.arange(q_len, q_len + self.n_future_positions).unsqueeze(0).to(mu.device)
-            cos, sin = module.rotary_emb(mu, position_ids)
-            cos, sin = cos[0], sin[0]
-        else:
-            cos, sin = module.rotary_emb(mu, q_len + self.n_future_positions)
-            cos, sin = cos[q_len:], sin[q_len:]
+        position_ids = torch.arange(q_len, q_len + self.n_future_positions).unsqueeze(0).to(mu.device)
+        cos, sin = module.rotary_emb(mu, position_ids)
+        cos, sin = cos[0], sin[0]
 
         Id = torch.eye(d, device=cos.device, dtype=cos.dtype)
         P = torch.zeros((d, d), device=cos.device, dtype=cos.dtype)
@@ -80,7 +76,7 @@ class ExpectedAttentionPress(ScorerPress):
         R = cos.unsqueeze(1) * Id + sin.unsqueeze(1) * P
 
         # Apply average rotation to the mean and covariance
-        R = R.mean(dim=0)
+        R = R.mean(dim=0).to(mu.device)
         mu = torch.matmul(mu, R.T)
         if self.use_covariance:
             cov = torch.matmul(R, torch.matmul(cov, R.T))
@@ -117,19 +113,21 @@ class ExpectedAttentionPress(ScorerPress):
 
         # Compute scores
         bsz, num_key_value_heads, q_len, d = keys.shape
-        keys = repeat_kv(keys, module.num_key_value_groups).transpose(2, 3)
+        num_key_value_groups = module.config.num_attention_heads // num_key_value_heads
+
+        keys = repeat_kv(keys, num_key_value_groups).transpose(2, 3)
         scores = torch.matmul(mean_query.unsqueeze(2), keys).squeeze(2) / math.sqrt(d)
         if self.use_covariance:
             scores += torch.einsum("bhin, bhij, bhjn->bhn", keys, cov_query, keys) / d / 2
         scores = F.softmax(scores, dim=-1)
 
         # Average scores across groups
-        scores = scores.view(bsz, num_key_value_heads, module.num_key_value_groups, q_len)
+        scores = scores.view(bsz, num_key_value_heads, num_key_value_groups, q_len)
         scores = scores.mean(dim=2)
 
         # Rescale scores by the norm of the values
         if self.use_vnorm:
-            scores = scores * values.norm(dim=-1)
+            scores = (scores + self.epsilon) * values.norm(dim=-1)
 
         # Add back the sink tokens. Use max score to make sure they are not pruned.
         scores = F.pad(scores, (self.n_sink, 0), value=scores.max().item())
