@@ -22,12 +22,15 @@ from kvpress import (
     SnapKVPress,
     StreamingLLMPress,
     TOVAPress,
+    FullPress,
+    HashPress
 )
 
 DATASET_DICT = {
-    "mt_niah": "../dataset/mt_niah.jsonl",
-    "mt_vt": "../dataset/mt_vt.jsonl",
-    "mt_passage": "../dataset/mt_passage.jsonl",
+    "mt_niah": "../MT_RULER/save/multi_turn_niah/validation.jsonl",
+    "mt_vt": "../MT_RULER/save/multi_turn_vt/validation.jsonl",
+    "mt_passage": "../MT_RULER/save/multi_turn_passage/validation.jsonl",
+    "niah_simple": "../MT_RULER/save/niah_simple/niah_simple.jsonl",
 }
 
 PRESS_DICT = {
@@ -37,12 +40,15 @@ PRESS_DICT = {
     "random": RandomPress(),
     "snapkv": SnapKVPress(),
     "streaming_llm": StreamingLLMPress(),
+    "full": FullPress(),
+    "hash": HashPress(),
 }
 
 SCORER_DICT = {
     "mt_niah": calculate_metrics,
     "mt_vt": calculate_metrics,
     "mt_passage": calculate_metrics,
+    "niah_simple": calculate_metrics,
 }
 
 
@@ -138,7 +144,7 @@ def evaluate(
     df["task"] = dataset
     for i, row in tqdm(df.iterrows()):
         context = row["context"]
-        queries = list(row["queries"])
+        questions = list(row["questions"])
         # answers = list(row["answers"])
         # length = row["length"] if "length" in row else None
         answer_prefix = row["answer_prefix"] if "answer_prefix" in row else None
@@ -148,7 +154,7 @@ def evaluate(
         # max_new_tokens_ = max_new_tokens if max_new_tokens is not None else df_["max_new_tokens"].iloc[0]
         output = pipe(
                 context, 
-                questions=queries, 
+                questions=questions, 
                 answer_prefix=answer_prefix,
                 press=press,
                 # max_new_tokens=max_new_tokens_,

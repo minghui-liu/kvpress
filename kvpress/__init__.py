@@ -25,6 +25,8 @@ from kvpress.presses.duo_attention_press import DuoAttentionPress
 
 # Patch the attention functions to support head-wise compression
 patch_attention_functions()
+from kvpress.presses.full_press import FullPress
+from kvpress.presses.hash_press import HashPress
 
 __all__ = [
     "CriticalAdaKVPress",
@@ -47,4 +49,6 @@ __all__ = [
     "KeyRerotationPress",
     "ChunkPress",
     "DuoAttentionPress",
+    "FullPress",
+    "HashPress",
 ]

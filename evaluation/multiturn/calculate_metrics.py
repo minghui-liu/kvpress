@@ -35,6 +35,7 @@ METRICS_DICT = {
     "mt_niah": mt_string_match_part,
     "mt_vt": mt_string_match_part,
     "mt_passage": mt_passage_scorer,
+    "niah_simple": mt_string_match_part,
 }
 
 def calculate_metrics(df: pd.DataFrame) -> dict:
@@ -44,7 +45,7 @@ def calculate_metrics(df: pd.DataFrame) -> dict:
     df["predicted_answer"] = df["predicted_answer"].apply(lambda lst: [x.strip() for x in lst])
 
     metric_fn = METRICS_DICT[df["task"].iloc[0]]
-    n_questions = len(df["queries"].iloc[0])
+    n_questions = len(df["questions"].iloc[0])
     for i in range(n_questions):
         preds = df["predicted_answer"].apply(lambda x: [x[i]]).tolist()
         refs = df["answers"].apply(lambda x: [x[i]]).tolist()
