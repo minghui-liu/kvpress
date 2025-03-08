@@ -22,15 +22,27 @@ from kvpress import (
     SnapKVPress,
     StreamingLLMPress,
     TOVAPress,
+    ThinKPress,
     FullPress,
     HashPress
 )
 
+# DATASET_DICT = {
+#     "mt_niah": "../MT_RULER/save/multi_turn_niah.jsonl",
+#     "mt_vt": "../MT_RULER/save/multi_turn_vt.jsonl",
+#     "mt_passage": "../MT_RULER/save/multi_turn_passage.jsonl",
+# }
+
 DATASET_DICT = {
-    "mt_niah": "../MT_RULER/save/multi_turn_niah/validation.jsonl",
-    "mt_vt": "../MT_RULER/save/multi_turn_vt/validation.jsonl",
-    "mt_passage": "../MT_RULER/save/multi_turn_passage/validation.jsonl",
-    "niah_simple": "../MT_RULER/save/niah_simple/niah_simple.jsonl",
+    "mt_niah_S": "../MT_RULER/save/multi_turn_niah_small.jsonl",
+    "mt_niah_M": "../MT_RULER/save/multi_turn_niah_medium.jsonl",
+    "mt_niah_L": "../MT_RULER/save/multi_turn_niah_large.jsonl",
+    "mt_vt_S": "../MT_RULER/save/multi_turn_vt_small.jsonl",
+    "mt_vt_M": "../MT_RULER/save/multi_turn_vt_medium.jsonl",
+    "mt_vt_L": "../MT_RULER/save/multi_turn_vt_large.jsonl",
+    "mt_passage_S": "../MT_RULER/save/multi_turn_passage_small.jsonl",
+    "mt_passage_M": "../MT_RULER/save/multi_turn_passage_medium.jsonl",
+    "mt_passage_L": "../MT_RULER/save/multi_turn_passage_large.jsonl",
 }
 
 PRESS_DICT = {
@@ -40,6 +52,8 @@ PRESS_DICT = {
     "random": RandomPress(),
     "snapkv": SnapKVPress(),
     "streaming_llm": StreamingLLMPress(),
+    "tova": TOVAPress(),
+    "think": ThinKPress(),
     "full": FullPress(),
     "hash": HashPress(),
 }
@@ -48,7 +62,6 @@ SCORER_DICT = {
     "mt_niah": calculate_metrics,
     "mt_vt": calculate_metrics,
     "mt_passage": calculate_metrics,
-    "niah_simple": calculate_metrics,
 }
 
 
@@ -141,7 +154,7 @@ def evaluate(
 
     # Run pipeline on each context
     df["predicted_answer"] = None
-    df["task"] = dataset
+    df["task"] = dataset[:-2] # remove the size suffix from the dataset name
     for i, row in tqdm(df.iterrows()):
         context = row["context"]
         questions = list(row["questions"])
@@ -154,7 +167,7 @@ def evaluate(
         # max_new_tokens_ = max_new_tokens if max_new_tokens is not None else df_["max_new_tokens"].iloc[0]
         output = pipe(
                 context, 
-                questions=questions, 
+                questions=questions,
                 answer_prefix=answer_prefix,
                 press=press,
                 # max_new_tokens=max_new_tokens_,
@@ -163,12 +176,12 @@ def evaluate(
         df.at[i, "predicted_answer"] = output["answers"]
         torch.cuda.empty_cache()
 
-    # Save answers
-    df["predicted_answer"].to_csv(str(save_filename), index=False)
+    # Save the predicted answer and the ground truth answer to a json file
+    df[["predicted_answer", "answers"]].to_csv(str(save_filename), index=False)
     print(f"Saved answers to {save_filename}")
 
     # Calculate metrics
-    scorer = SCORER_DICT[dataset]
+    scorer = SCORER_DICT[dataset[:-2]] # remove the size suffix from the dataset name
     metrics = scorer(df)
     with open(str(save_filename).replace(".csv", ".json"), "w") as f:
         json.dump(metrics, f)
@@ -176,6 +189,7 @@ def evaluate(
 
 
 if __name__ == "__main__":
-    cache_dir = "../.cache/huggingface"
-    os.environ['HF_HOME'] = cache_dir
+    cache_dir = "/fs/nexus-scratch/minghui/.cache/huggingface"
+    if not os.environ.get("HF_HOME"):
+        os.environ["HF_HOME"] = cache_dir
     Fire(evaluate)

@@ -182,10 +182,13 @@ class KVPressTextGenerationPipeline(Pipeline):
             answer = self.generate_answer(
                 question_ids=question_ids.to(self.model.device),
                 cache=cache,
+                press=press,
                 context_length=(cache.get_seq_length() if isinstance(press, KeyRerotationPress) else context_length),
                 max_new_tokens=max_new_tokens,
             )
             answers.append(answer)
+            context_length += question_ids.shape[1] # update context length for next question
+            # print(f"[DEBUG] length of cache: {cache.get_seq_length()}")
 
         return answers
 
@@ -204,7 +207,7 @@ class KVPressTextGenerationPipeline(Pipeline):
         return {"answers": model_outputs}
 
     def generate_answer(
-        self, question_ids: torch.Tensor, cache: Cache, context_length: int, max_new_tokens: int
+        self, question_ids: torch.Tensor, cache: Cache, press: BasePress, context_length: int, max_new_tokens: int
     ) -> str:
         """
         Generate an answer to a question using greedy decoding.
@@ -215,6 +218,8 @@ class KVPressTextGenerationPipeline(Pipeline):
             The tokenized question.
         cache : Cache
             The compressed key-value cache.
+        press: BasePress
+            The key-value press used for compression.
         context_length : int
             The length of the context.
         max_new_tokens : int
@@ -226,18 +231,23 @@ class KVPressTextGenerationPipeline(Pipeline):
             The generated answer.
         """
 
-        cache_seq_lengths = [cache.get_seq_length(layer_idx) for layer_idx in range(len(cache))]
+        # cache_seq_lengths = [cache.get_seq_length(layer_idx) for layer_idx in range(len(cache))]
         position_ids = torch.arange(
             context_length, context_length + question_ids.shape[1], device=self.model.device
         ).unsqueeze(0)
 
         # if the user doesn't provide a question, skip forward pass
-        outputs = self.model(
-            input_ids=question_ids.to(self.model.device),
-            past_key_values=cache,
-            position_ids=position_ids,
-            num_logits_to_keep=1,
-        )
+        with press(self.model) if press is not None else contextlib.nullcontext():
+            outputs = self.model(
+                input_ids=question_ids.to(self.model.device),
+                past_key_values=cache,
+                position_ids=position_ids,
+                output_attentions=self.output_attentions(press),
+                num_logits_to_keep=1,
+            )
+
+        # Include the question body in the cache
+        cache_seq_lengths = [cache.get_seq_length(layer_idx) for layer_idx in range(len(cache))]
 
         position_ids = position_ids[:, -1:] + 1
         generated_ids = [outputs.logits[0, -1].argmax()]
@@ -258,7 +268,7 @@ class KVPressTextGenerationPipeline(Pipeline):
                 break
         answer = self.tokenizer.decode(torch.stack(generated_ids), skip_special_tokens=True)
 
-        # Remove the generated tokens from the cache
+        # Remove the generated answer tokens from the cache
         cache.key_cache = [
             cache.key_cache[layer_idx][:, :, :sequence_length]
             for layer_idx, sequence_length in enumerate(cache_seq_lengths)

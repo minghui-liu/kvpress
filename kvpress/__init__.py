@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 
-from kvpress.attention_patch import patch_attention_functions
+# from kvpress.attention_patch import patch_attention_functions
 from kvpress.pipeline import KVPressTextGenerationPipeline
 from kvpress.presses.adakv_press import AdaKVPress
 from kvpress.presses.base_press import BasePress
@@ -24,7 +24,7 @@ from kvpress.presses.criticalkv_press import CriticalKVPress, CriticalAdaKVPress
 from kvpress.presses.duo_attention_press import DuoAttentionPress
 
 # Patch the attention functions to support head-wise compression
-patch_attention_functions()
+# patch_attention_functions()
 from kvpress.presses.full_press import FullPress
 from kvpress.presses.hash_press import HashPress
 

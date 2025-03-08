@@ -35,7 +35,6 @@ METRICS_DICT = {
     "mt_niah": mt_string_match_part,
     "mt_vt": mt_string_match_part,
     "mt_passage": mt_passage_scorer,
-    "niah_simple": mt_string_match_part,
 }
 
 def calculate_metrics(df: pd.DataFrame) -> dict:
