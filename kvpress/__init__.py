@@ -47,4 +47,5 @@ __all__ = [
     "KeyRerotationPress",
     "ChunkPress",
     "DuoAttentionPress",
+    "PagedPress"
 ]
