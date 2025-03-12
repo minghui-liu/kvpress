@@ -78,6 +78,7 @@ def evaluate(
     fraction: float = 1.0,
     max_new_tokens: Optional[int] = None,
     max_context_length: Optional[int] = None,
+    save_dir: Optional[str] = None,
 ):
     """
     Evaluate a model on a dataset using a press and save the results
@@ -112,7 +113,10 @@ def evaluate(
         device = "cuda:0" if torch.cuda.is_available() else "cpu"
 
     # Save directory
-    save_dir = Path(__file__).parent / "results"
+    if save_dir is None:
+        save_dir = Path(__file__).parent / "results"
+    else:
+        save_dir = Path(save_dir)
     save_dir.mkdir(exist_ok=True)
     save_filename = save_dir / (
         "__".join([dataset, data_dir if data_dir else "", model.replace("/", "--"), press_name, str(compression_ratio)])
