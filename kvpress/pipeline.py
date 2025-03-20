@@ -178,17 +178,16 @@ class KVPressTextGenerationPipeline(Pipeline):
 
         # Greedy decoding for each question
         answers = []
+        last_position_id = (cache.get_seq_length() if isinstance(press, KeyRerotationPress) else context_length) - 1
         for question_ids in input_tensors["questions_ids"]:
-            answer = self.generate_answer(
+            answer, last_position_id = self.generate_answer(
                 question_ids=question_ids.to(self.model.device),
                 cache=cache,
                 press=press,
-                context_length=(cache.get_seq_length() if isinstance(press, KeyRerotationPress) else context_length),
+                last_position_id=last_position_id,
                 max_new_tokens=max_new_tokens,
             )
             answers.append(answer)
-            context_length += question_ids.shape[1] # update context length for next question
-            # print(f"[DEBUG] length of cache: {cache.get_seq_length()}")
 
         return answers
 
@@ -207,7 +206,7 @@ class KVPressTextGenerationPipeline(Pipeline):
         return {"answers": model_outputs}
 
     def generate_answer(
-        self, question_ids: torch.Tensor, cache: Cache, press: BasePress, context_length: int, max_new_tokens: int
+        self, question_ids: torch.Tensor, cache: Cache, press: BasePress, last_position_id: int, max_new_tokens: int
     ) -> str:
         """
         Generate an answer to a question using greedy decoding.
@@ -220,8 +219,8 @@ class KVPressTextGenerationPipeline(Pipeline):
             The compressed key-value cache.
         press: BasePress
             The key-value press used for compression.
-        context_length : int
-            The length of the context.
+        position_id_start : int
+            The start of the position id.
         max_new_tokens : int
             The maximum number of new tokens to generate.
 
@@ -231,9 +230,8 @@ class KVPressTextGenerationPipeline(Pipeline):
             The generated answer.
         """
 
-        # cache_seq_lengths = [cache.get_seq_length(layer_idx) for layer_idx in range(len(cache))]
         position_ids = torch.arange(
-            context_length, context_length + question_ids.shape[1], device=self.model.device
+            last_position_id + 1, last_position_id + 1 + question_ids.shape[1], device=self.model.device
         ).unsqueeze(0)
 
         # if the user doesn't provide a question, skip forward pass
@@ -246,9 +244,6 @@ class KVPressTextGenerationPipeline(Pipeline):
                 num_logits_to_keep=1,
             )
 
-        # Include the question body in the cache
-        cache_seq_lengths = [cache.get_seq_length(layer_idx) for layer_idx in range(len(cache))]
-
         position_ids = position_ids[:, -1:] + 1
         generated_ids = [outputs.logits[0, -1].argmax()]
 
@@ -257,37 +252,20 @@ class KVPressTextGenerationPipeline(Pipeline):
             should_stop_token_ids = [should_stop_token_ids]
 
         for i in range(max_new_tokens - 1):
+            position_ids = position_ids[:, -1:] + 1
             outputs = self.model(
                 input_ids=generated_ids[-1].unsqueeze(0).unsqueeze(0),
                 past_key_values=cache,
-                position_ids=position_ids + i,
+                position_ids=position_ids,
             )
             new_id = outputs.logits[0, -1].argmax()
             generated_ids.append(new_id)
             if new_id.item() in should_stop_token_ids:
                 break
         answer = self.tokenizer.decode(torch.stack(generated_ids), skip_special_tokens=True)
+        last_position_id = position_ids[0, -1].item()
 
-        # Remove the generated answer tokens from the cache
-        cache.key_cache = [
-            cache.key_cache[layer_idx][:, :, :sequence_length]
-            for layer_idx, sequence_length in enumerate(cache_seq_lengths)
-        ]
-        cache.value_cache = [
-            cache.value_cache[layer_idx][:, :, :sequence_length]
-            for layer_idx, sequence_length in enumerate(cache_seq_lengths)
-        ]
-        if hasattr(cache, "_quantized_key_cache"):
-            cache._quantized_key_cache = [
-                cache._quantized_key_cache[layer_idx][:, :, :sequence_length]
-                for layer_idx, sequence_length in enumerate(cache_seq_lengths)
-            ]
-            cache._quantized_value_cache = [
-                cache._quantized_value_cache[layer_idx][:, :, :sequence_length]
-                for layer_idx, sequence_length in enumerate(cache_seq_lengths)
-            ]
-
-        return answer
+        return answer, last_position_id
 
 
 PIPELINE_REGISTRY.register_pipeline(
