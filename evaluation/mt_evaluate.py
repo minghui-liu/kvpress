@@ -24,14 +24,10 @@ from kvpress import (
     TOVAPress,
     ThinKPress,
     FullPress,
-    HashPress
+    HashPress,
+    PagedAttentionPress,
 )
 
-# DATASET_DICT = {
-#     "mt_niah": "../MT_RULER/save/multi_turn_niah.jsonl",
-#     "mt_vt": "../MT_RULER/save/multi_turn_vt.jsonl",
-#     "mt_passage": "../MT_RULER/save/multi_turn_passage.jsonl",
-# }
 
 DATASET_DICT = {
     "mt_niah_S": "../MT_RULER/save/multi_turn_niah_small.jsonl",
@@ -40,9 +36,22 @@ DATASET_DICT = {
     "mt_vt_S": "../MT_RULER/save/multi_turn_vt_small.jsonl",
     "mt_vt_M": "../MT_RULER/save/multi_turn_vt_medium.jsonl",
     "mt_vt_L": "../MT_RULER/save/multi_turn_vt_large.jsonl",
-    "mt_passage_S": "../MT_RULER/save/multi_turn_passage_small.jsonl",
-    "mt_passage_M": "../MT_RULER/save/multi_turn_passage_medium.jsonl",
-    "mt_passage_L": "../MT_RULER/save/multi_turn_passage_large.jsonl",
+    "mt_pr_S": "../MT_RULER/save/multi_turn_pr_small.jsonl",
+    "mt_pr_M": "../MT_RULER/save/multi_turn_pr_medium.jsonl",
+    "mt_pr_L": "../MT_RULER/save/multi_turn_pr_large.jsonl",
+    # different number of questions
+    "mt_niah_S_20": "../MT_RULER/save/multi_turn_niah_small_20.jsonl",
+    "mt_niah_S_30": "../MT_RULER/save/multi_turn_niah_small_30.jsonl",
+    "mt_niah_S_40": "../MT_RULER/save/multi_turn_niah_small_40.jsonl",
+    "mt_niah_S_50": "../MT_RULER/save/multi_turn_niah_small_50.jsonl",
+    "mt_vt_S_20": "../MT_RULER/save/multi_turn_vt_small_20.jsonl",
+    "mt_vt_S_30": "../MT_RULER/save/multi_turn_vt_small_30.jsonl",
+    "mt_vt_S_40": "../MT_RULER/save/multi_turn_vt_small_40.jsonl",
+    "mt_vt_S_50": "../MT_RULER/save/multi_turn_vt_small_50.jsonl",
+    "mt_pr_S_20": "../MT_RULER/save/multi_turn_pr_small_20.jsonl",
+    "mt_pr_S_30": "../MT_RULER/save/multi_turn_pr_small_30.jsonl",
+    "mt_pr_S_40": "../MT_RULER/save/multi_turn_pr_small_40.jsonl",
+    "mt_pr_S_50": "../MT_RULER/save/multi_turn_pr_small_50.jsonl",
 }
 
 PRESS_DICT = {
@@ -56,14 +65,8 @@ PRESS_DICT = {
     "think": ThinKPress(),
     "full": FullPress(),
     "hash": HashPress(),
+    "paged": PagedAttentionPress(),
 }
-
-SCORER_DICT = {
-    "mt_niah": calculate_metrics,
-    "mt_vt": calculate_metrics,
-    "mt_passage": calculate_metrics,
-}
-
 
 logger = logging.getLogger(__name__)
 
@@ -107,7 +110,6 @@ def evaluate(
 
     assert dataset in DATASET_DICT, f"No dataset found for {dataset}"
     # assert dataset in SCORER_DICT, f"No scorer found for {dataset}"
-    data_dir = str(data_dir) if data_dir else None
 
     if device is None:
         device = "cuda:0" if torch.cuda.is_available() else "cpu"
@@ -119,17 +121,35 @@ def evaluate(
         save_dir = Path(save_dir)
     save_dir.mkdir(exist_ok=True)
     save_filename = save_dir / (
-        "__".join([dataset, data_dir if data_dir else "", model.replace("/", "--"), press_name, str(compression_ratio)])
-        + ".csv"
+        "__".join([dataset, model.replace("/", "--"), press_name, str(compression_ratio), 'answers'])
+        + ".json"
     )
-    if save_filename.exists():
+    score_filename = save_dir / (
+        "__".join([dataset, model.replace("/", "--"), press_name, str(compression_ratio), 'score'])
+        + ".json"
+    )
+
+    if save_filename.exists() and score_filename.exists():
         logger.warning(f"Results already exist at {save_filename}")
+        return
+    elif save_filename.exists():
+        logger.warning(f"LLM answers already exist at {save_filename}")
+        # read the answers from save file
+        with open(str(save_filename), "r") as f:
+            obj = json.load(f)
+            predicted_answers = obj["predicted_answers"]
+            answers = obj["answers"]
+        # Calculate metrics
+        metrics = calculate_metrics(predicted_answers, ds["answers"])
+        with open(str(score_filename), "w") as f:
+            json.dump(metrics, f)
+        print(metrics)
+        return
 
     # Load dataframe
-    # df = load_dataset("json", data_files=DATASET_DICT[dataset], data_dir=data_dir).to_pandas()
-    df = load_dataset("json", data_files=DATASET_DICT[dataset])["train"].to_pandas()
+    ds = load_dataset("json", data_files=DATASET_DICT[dataset])["train"]
     if fraction < 1.0:
-        df = df.sample(frac=fraction, random_state=42)
+        ds = ds.select(range(int(len(ds) * fraction)))
 
     # Load press
     assert press_name in PRESS_DICT
@@ -142,11 +162,10 @@ def evaluate(
     else:
         try:
             import flash_attn  # noqa: F401
-
             model_kwargs = {"attn_implementation": "flash_attention_2"}
         except ImportError:
             model_kwargs = {}
-
+    
     if device == "auto":
         pipe = pipeline(
             "kv-press-text-generation", model=model, device_map="auto", torch_dtype="auto", model_kwargs=model_kwargs, cache_dir=cache_dir
@@ -157,17 +176,11 @@ def evaluate(
         )
 
     # Run pipeline on each context
-    df["predicted_answer"] = None
-    df["task"] = dataset[:-2] # remove the size suffix from the dataset name
-    for i, row in tqdm(df.iterrows()):
+    predicted_answers = []
+    for row in tqdm(ds, total=len(ds)):
         context = row["context"]
-        questions = list(row["questions"])
-        # answers = list(row["answers"])
-        # length = row["length"] if "length" in row else None
+        questions = row["questions"]
         answer_prefix = row["answer_prefix"] if "answer_prefix" in row else None
-        # TODO: hack right now, please fix in the dataset generation stage
-        if dataset == "mt_passage":
-            answer_prefix = "Please enter the number of the paragraph that the abstract is from. The answer format must be like “Paragraph 1”, “Paragraph 2”, etc.\nThe answer is:"
         # max_new_tokens_ = max_new_tokens if max_new_tokens is not None else df_["max_new_tokens"].iloc[0]
         output = pipe(
                 context, 
@@ -177,17 +190,21 @@ def evaluate(
                 # max_new_tokens=max_new_tokens_,
                 max_context_length=max_context_length,
         )
-        df.at[i, "predicted_answer"] = output["answers"]
+        predicted_answers.append(output["answers"])
         torch.cuda.empty_cache()
 
+
     # Save the predicted answer and the ground truth answer to a json file
-    df[["predicted_answer", "answers"]].to_csv(str(save_filename), index=False)
-    print(f"Saved answers to {save_filename}")
+    save_obj = {
+        "predicted_answers": predicted_answers,
+        "answers": ds["answers"],
+    }
+    with open(str(save_filename), "w") as f:
+        json.dump(save_obj, f)
 
     # Calculate metrics
-    scorer = SCORER_DICT[dataset[:-2]] # remove the size suffix from the dataset name
-    metrics = scorer(df)
-    with open(str(save_filename).replace(".csv", ".json"), "w") as f:
+    metrics = calculate_metrics(predicted_answers, ds["answers"])
+    with open(str(score_filename), "w") as f:
         json.dump(metrics, f)
     print(metrics)
 

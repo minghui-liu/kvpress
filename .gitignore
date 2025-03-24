@@ -1,4 +1,5 @@
 evaluation/mt_*.sh
+evaluation/exp_*.sh
 evaluation/slurm-*.out
 
 dev_notebooks/

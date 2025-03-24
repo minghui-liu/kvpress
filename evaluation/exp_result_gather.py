@@ -204,7 +204,7 @@ exit()
 # Exp 3: Different number of questions
 subdir = "2025_03_12_COLM_QUESTION_NUM"
 subdir_10 = "2025_03_10_COLM_SML"
-datasets = ["mt_niah_S", "mt_vt_S", "mt_passage_S"]
+datasets = ["mt_niah_S", "mt_vt_S", "mt_pr_S"]
 press_names = ["full", "knorm", "expected_attention", "observed_attention", "snapkv", "streaming_llm", "tova"]
 compression_ratio = 0.5
 nq_df = []
@@ -253,7 +253,7 @@ nq_df.to_csv(args.results_dir / "nquestions_exp.csv")
 # Exp 4: Different models   
 subdir = "2025_03_12_COLM_MODEL_TYPE"
 llama_subdir = "2025_03_10_COLM_SML"
-datasets = ["mt_niah_M", "mt_vt_M", "mt_passage_M"]
+datasets = ["mt_niah_M", "mt_vt_M", "mt_pr_M"]
 press_names = ["full", "knorm", "expected_attention", "observed_attention", "snapkv", "streaming_llm", "tova"]
 compression_ratio = 0.5
 
