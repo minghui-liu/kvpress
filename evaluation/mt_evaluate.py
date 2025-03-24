@@ -30,24 +30,26 @@ from kvpress import (
 
 
 DATASET_DICT = {
+    # niah
     "mt_niah_S": "../MT_RULER/save/multi_turn_niah_small.jsonl",
     "mt_niah_M": "../MT_RULER/save/multi_turn_niah_medium.jsonl",
     "mt_niah_L": "../MT_RULER/save/multi_turn_niah_large.jsonl",
-    "mt_vt_S": "../MT_RULER/save/multi_turn_vt_small.jsonl",
-    "mt_vt_M": "../MT_RULER/save/multi_turn_vt_medium.jsonl",
-    "mt_vt_L": "../MT_RULER/save/multi_turn_vt_large.jsonl",
-    "mt_pr_S": "../MT_RULER/save/multi_turn_pr_small.jsonl",
-    "mt_pr_M": "../MT_RULER/save/multi_turn_pr_medium.jsonl",
-    "mt_pr_L": "../MT_RULER/save/multi_turn_pr_large.jsonl",
-    # different number of questions
     "mt_niah_S_20": "../MT_RULER/save/multi_turn_niah_small_20.jsonl",
     "mt_niah_S_30": "../MT_RULER/save/multi_turn_niah_small_30.jsonl",
     "mt_niah_S_40": "../MT_RULER/save/multi_turn_niah_small_40.jsonl",
     "mt_niah_S_50": "../MT_RULER/save/multi_turn_niah_small_50.jsonl",
+    # vt
+    "mt_vt_S": "../MT_RULER/save/multi_turn_vt_small.jsonl",
+    "mt_vt_M": "../MT_RULER/save/multi_turn_vt_medium.jsonl",
+    "mt_vt_L": "../MT_RULER/save/multi_turn_vt_large.jsonl",
     "mt_vt_S_20": "../MT_RULER/save/multi_turn_vt_small_20.jsonl",
     "mt_vt_S_30": "../MT_RULER/save/multi_turn_vt_small_30.jsonl",
     "mt_vt_S_40": "../MT_RULER/save/multi_turn_vt_small_40.jsonl",
     "mt_vt_S_50": "../MT_RULER/save/multi_turn_vt_small_50.jsonl",
+    # pr
+    "mt_pr_S": "../MT_RULER/save/multi_turn_pr_small.jsonl",
+    "mt_pr_M": "../MT_RULER/save/multi_turn_pr_medium.jsonl",
+    "mt_pr_L": "../MT_RULER/save/multi_turn_pr_large.jsonl",
     "mt_pr_S_20": "../MT_RULER/save/multi_turn_pr_small_20.jsonl",
     "mt_pr_S_30": "../MT_RULER/save/multi_turn_pr_small_30.jsonl",
     "mt_pr_S_40": "../MT_RULER/save/multi_turn_pr_small_40.jsonl",
@@ -181,13 +183,13 @@ def evaluate(
         context = row["context"]
         questions = row["questions"]
         answer_prefix = row["answer_prefix"] if "answer_prefix" in row else None
-        # max_new_tokens_ = max_new_tokens if max_new_tokens is not None else df_["max_new_tokens"].iloc[0]
+        max_new_tokens_ = max_new_tokens if max_new_tokens is not None else 50
         output = pipe(
                 context, 
                 questions=questions,
                 answer_prefix=answer_prefix,
                 press=press,
-                # max_new_tokens=max_new_tokens_,
+                max_new_tokens=max_new_tokens_,
                 max_context_length=max_context_length,
         )
         predicted_answers.append(output["answers"])
