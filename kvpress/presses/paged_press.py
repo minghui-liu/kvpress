@@ -28,6 +28,7 @@ class PagedAttentionPress(BasePress):
         self.free_pages = list(range(max_blocks))
         # keeps offloaded pages in cpu memory
         self.offloaded_pages = {}
+    
     def compress(self, module, hidden_states, keys, values, attentions, kwargs):
         """
         Reorganize the KV cache into fixed-size pages and update the block table.
