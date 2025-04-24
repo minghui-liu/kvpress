@@ -54,6 +54,11 @@ DATASET_DICT = {
     "mt_pr_S_30": "../MT_RULER/save/multi_turn_pr_small_30.jsonl",
     "mt_pr_S_40": "../MT_RULER/save/multi_turn_pr_small_40.jsonl",
     "mt_pr_S_50": "../MT_RULER/save/multi_turn_pr_small_50.jsonl",
+    # MT VARS
+    "retrieval": "../MT_VARS/output/mt_retrieval.jsonl",
+    "vars_tracking": "../MT_VARS/output/mt_vars_tracking.jsonl",
+    "val_tracking": "../MT_VARS/output/mt_val_tracking.jsonl",
+    "aggregate": "../MT_VARS/output/mt_aggregate.jsonl",
 }
 
 PRESS_DICT = {
