@@ -27,8 +27,8 @@ class BasePress:
     Base class for all KV cache compression methods.
     The `forward_hook` method is called after the forward pass of an attention layer to update the cache.
     """
-
-    def compress(
+    
+    def compress_prefilling(
         self,
         module: nn.Module,
         hidden_states: torch.Tensor,
@@ -38,7 +38,7 @@ class BasePress:
         kwargs: dict,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
-        The core logic of the compression method.
+        The core logic of the compression method during the pre-filling phase.
 
         Parameters
         ----------
@@ -60,9 +60,42 @@ class BasePress:
         tuple[torch.Tensor, torch.Tensor]
             Updated keys and values
         """
-
         raise NotImplementedError("compress method must be implemented in subclass")
 
+
+    def compress_decoding(
+        self,
+        module: nn.Module,
+        hidden_states: torch.Tensor,
+        keys: torch.Tensor,
+        values: torch.Tensor,
+        attentions: torch.Tensor,
+        kwargs: dict,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        The core logic of the compression method during the decoding phase.
+        Parameters
+        ----------
+        module :
+            Transformer layer, see `hook` method for more details
+        hidden_states :
+            Hidden states of the layer
+        keys :
+            Keys of the cache (unquantized)
+        values :
+            Values of the cache (unquantized)
+        attentions :
+            Attention weights of the layer
+        kwargs :
+            Keyword arguments, as given to the forward pass of the layer  
+        Returns
+        -------
+        tuple[torch.Tensor, torch.Tensor]
+            Updated keys and values
+        """
+        raise NotImplementedError("compress method must be implemented in subclass")
+
+    
     def forward_hook(self, module: nn.Module, input: list[torch.Tensor], kwargs: dict, output: list):
         """
         Default forward hook called after the forward pass of an attention layer.
@@ -92,8 +125,7 @@ class BasePress:
         q_len = hidden_states.shape[1]
 
         # Don't compress after pre-filling
-        if kwargs["cache_position"][-1] > q_len:
-            return output
+        is_prefilling = kwargs["cache_position"][-1] <= q_len
 
         if isinstance(cache, QuantizedCache):
             keys = cache._dequantize(cache._quantized_key_cache[module.layer_idx])
@@ -102,7 +134,10 @@ class BasePress:
             keys = cache.key_cache[module.layer_idx]
             values = cache.value_cache[module.layer_idx]
 
-        keys, values = self.compress(module, hidden_states, keys, values, output[1], kwargs)
+        if is_prefilling:
+            keys, values = self.compress_prefilling(module, hidden_states, keys, values, output[1], kwargs)
+        else:
+            keys, values = self.compress_decoding(module, hidden_states, keys, values, output[1], kwargs)
 
         if isinstance(cache, QuantizedCache):
             cache._quantized_key_cache[module.layer_idx] = cache._quantize(keys, axis=cache.axis_key)

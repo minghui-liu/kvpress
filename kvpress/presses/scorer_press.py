@@ -23,6 +23,7 @@ class ScorerPress(BasePress):
     """
 
     compression_ratio: float = 0.0
+    cache_budget: int = 0
 
     def __post_init__(self):
         assert 0 <= self.compression_ratio < 1, "Compression ratio must be between 0 and 1"
@@ -42,7 +43,7 @@ class ScorerPress(BasePress):
         """
         raise NotImplementedError
 
-    def compress(
+    def compress_prefilling(
         self,
         module: nn.Module,
         hidden_states: torch.Tensor,
@@ -52,20 +53,57 @@ class ScorerPress(BasePress):
         kwargs: dict,
     ) -> tuple[torch.Tensor, torch.Tensor]:
 
-        if self.compression_ratio == 0:
+        if self.cache_budget <= 0:
+            return keys, values
+
+        q_len = hidden_states.shape[1]
+        if self.cache_budget >= q_len:
             return keys, values
 
         # Compute scores
         scores = self.score(module, hidden_states, keys, values, attentions, kwargs)
-
         # Get indices of KV pairs with the lowest scores
-        q_len = hidden_states.shape[1]
-        n_kept = int(q_len * (1 - self.compression_ratio))
-        indices = scores.topk(n_kept, dim=-1).indices
+        indices = scores.topk(self.cache_budget, dim=-1).indices
         indices = indices.unsqueeze(-1).expand(-1, -1, -1, module.head_dim)
 
         # Prune keys and values
         keys = keys.gather(2, indices).contiguous()
         values = values.gather(2, indices).contiguous()
 
+        return keys, values
+    
+
+    def compress_decoding(
+        self,
+        module: nn.Module,
+        hidden_states: torch.Tensor,
+        keys: torch.Tensor,
+        values: torch.Tensor,
+        attentions: torch.Tensor,
+        kwargs: dict,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+
+        if self.cache_budget == 0:
+            return keys, values
+
+        q_len = hidden_states.shape[1]
+        if self.cache_budget >= q_len:
+            return keys, values
+
+        # Compute scores
+        scores = self.score(module, hidden_states, keys, values, attentions, kwargs)
+        
+        # Get index of KV pairs with the lowest score
+        index_to_remove = scores.argmin(scores, dim=-1)
+        index_to_remove = index_to_remove.unsqueeze(-1).expand(-1, -1, -1, module.head_dim)
+
+        # Prune keys and values
+        keys = torch.cat([
+                keys[:, :index_to_remove, :],
+                keys[:, index_to_remove + 1 :, :],
+            ], dim=1)
+        values = torch.cat([
+                values[:, :index_to_remove, :],
+                values[:, index_to_remove + 1 :, :],
+            ], dim=1)
         return keys, values
