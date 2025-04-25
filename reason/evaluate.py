@@ -1,0 +1,261 @@
+# SPDX-FileCopyrightText: Copyright (c) 1993-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+import contextlib
+import json
+import logging
+import os
+from pathlib import Path
+from typing import Optional
+
+from kvpress.presses.base_press import BasePress
+from kvpress.presses.key_rerotation_press import KeyRerotationPress
+from kvpress.presses.per_layer_compression_press import PerLayerCompressionPress
+import torch
+from datasets import load_dataset
+from fire import Fire
+
+from tqdm import tqdm
+from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
+
+from gsm8k import gsm8k_formatter, gsm8k_scorer
+
+from kvpress import (
+    AdaKVPress,
+    ChunkKVPress,
+    ComposedPress,
+    CriticalAdaKVPress,
+    CriticalKVPress,
+    DuoAttentionPress,
+    ExpectedAttentionPress,
+    KnormPress,
+    ObservedAttentionPress,
+    RandomPress,
+    SnapKVPress,
+    StreamingLLMPress,
+    ThinKPress,
+    TOVAPress,
+    QFilterPress,
+    PyramidKVPress,
+    FinchPress,
+)
+
+logger = logging.getLogger(__name__)
+
+DATASET_DICT = {
+    "gsm8k": "openai/gsm8k",
+}
+
+FORMATTER_DICT = {
+    "gsm8k": gsm8k_formatter,
+}
+
+SCORER_DICT = {
+    "gsm8k": gsm8k_scorer,
+}
+
+PRESS_DICT = {
+    "knorm": KnormPress(),
+    "observed_attention": ObservedAttentionPress(),
+    "random": RandomPress(),
+    "snapkv": SnapKVPress(),
+    "streaming_llm": StreamingLLMPress(),
+}
+
+
+def output_attentions(press: BasePress):
+    if isinstance(press, ObservedAttentionPress):
+        return True
+    if isinstance(press, (KeyRerotationPress, PerLayerCompressionPress)) and isinstance(
+        press.press, ObservedAttentionPress
+    ):
+        return True
+    return False
+
+def evaluate(
+    dataset: str,
+    data_dir: Optional[str] = None,
+    model_name: str = "meta-llama/Meta-Llama-3.1-8B-Instruct",
+    device: Optional[str] = None,
+    press_name: str = "knorm",
+    cache_budget: int = 1024,
+    fraction: float = 1.0,
+    max_new_tokens: Optional[int] = 512,
+    max_context_length: Optional[int] = None,
+    compression_ratio: float = 0.1,
+    key_channel_compression_ratio: float = 0.5,
+):
+    """
+    Evaluate a model on a dataset using a press and save the results
+
+    Parameters
+    ----------
+    dataset : str
+        Dataset to evaluate
+    data_dir : str, optional
+        Subdirectory of the dataset to evaluate, by default None
+    model_name : str, optional
+        Model to use, by default "meta-llama/Meta-Llama-3.1-8B-Instruct"
+    device : str, optional
+        Model device, by default cuda:0 if available else cpu. For multi-GPU use "auto"
+    press_name : str, optional
+        Press to use (see PRESS_DICT), by default "expected_attention"
+    compression_ratio : float, optional
+        Compression ratio for the press, by default 0.1
+    max_new_tokens : int, optional
+        Maximum number of new tokens to generate, by default use the default for the task (recommended)
+    fraction : float, optional
+        Fraction of the dataset to evaluate, by default 1.0
+    max_context_length : int, optional
+        Maximum number of tokens to use in the context. By default will use the maximum length supported by the model.
+    compress_questions : bool, optional
+        Whether to compress the questions as well, by default False
+    key_channel_compression_ratio : float, optional
+        key Channel Compression ratio for the channel press, by default 0.5
+    """
+
+    assert dataset in DATASET_DICT, f"No dataset found for {dataset}"
+    assert dataset in SCORER_DICT, f"No scorer found for {dataset}"
+    data_dir = str(data_dir) if data_dir else None
+
+    if device is None:
+        device = "cuda:0" if torch.cuda.is_available() else "cpu"
+
+    save_dir = Path(__file__).parent / "results"
+    save_dir.mkdir(exist_ok=True)
+    save_filename = save_dir / (
+        "__".join([dataset, data_dir if data_dir else "", model_name.replace("/", "--"), press_name, f"budget{cache_budget}"])
+        + ".jsonl"
+    )
+    if fraction < 1.0:
+        save_filename = save_filename.with_name(save_filename.stem + f"__fraction{fraction:.2f}" + save_filename.suffix)
+    if max_context_length is not None:
+        save_filename = save_filename.with_name(save_filename.stem + f"__max_context{max_context_length}" + save_filename.suffix)
+    score_filename = save_dir / (save_filename.stem + "_score.json")
+
+    if save_filename.exists():
+        logger.warning(f"Results already exist at {save_filename}")
+        print(f"Results already exist. Loading results from {save_filename}")
+        # load the results and evaluate the metrics
+        with open(str(save_filename), "r") as f:
+            save_obj = [json.loads(line) for line in f.readlines()]
+        predictions = [obj["predictions"] for obj in save_obj]
+        gt_answers = [obj["gt_answers"] for obj in save_obj]
+        metrics = SCORER_DICT[dataset](predictions, gt_answers)
+        with open(str(score_filename), "w") as f:
+            json.dump(metrics, f)
+        print(metrics)
+        return
+
+    # Load dataset
+    ds = load_dataset(DATASET_DICT[dataset], data_dir=data_dir, split="test")
+    if fraction < 1.0:
+        ds = ds.shuffle(seed=42).select(range(int(len(ds) * fraction)))
+    
+    # Load press
+    assert press_name in PRESS_DICT
+    press = PRESS_DICT[press_name]
+    formatter = FORMATTER_DICT[dataset]
+    scorer = SCORER_DICT[dataset]
+
+    # set the compression ratio
+    # if isinstance(press, (DuoAttentionPress)):
+    #     press.head_compression_ratio = compression_ratio
+    # elif isinstance(press, (ComposedPress)):
+    #     for ps in press.presses:
+    #         if isinstance(ps, (ThinKPress)):
+    #             ps.key_channel_compression_ratio = key_channel_compression_ratio
+    #             save_filename = save_filename.with_name(
+    #                 save_filename.stem + f"__channel{key_channel_compression_ratio}" + save_filename.suffix
+    #             )
+    #         else:
+    #             ps.compression_ratio = compression_ratio  # type:ignore[attr-defined]
+    # elif isinstance(press, (ThinKPress)):
+    #     press.key_channel_compression_ratio = key_channel_compression_ratio
+    #     save_filename = save_filename.with_name(
+    #         save_filename.stem + f"__channel{key_channel_compression_ratio}" + save_filename.suffix
+    #     )
+    # else:
+    #     press.compression_ratio = compression_ratio  # type:ignore[attr-defined]
+
+    # Set the cache budget for the press
+    press.cache_budget = cache_budget
+
+    # Initialize pipeline with the correct attention implementation
+    model_kwargs = {"torch_dtype": "auto"}
+    if isinstance(press, ObservedAttentionPress):
+        model_kwargs["attn_implementation"] = "eager"
+    else:
+        try:
+            import flash_attn  # noqa: F401
+            model_kwargs["attn_implementation"] = "flash_attention_2"
+        except ImportError:
+            pass
+
+    # Load model
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name,
+        device_map="auto",
+        trust_remote_code=True,
+        **model_kwargs,
+    )
+    tokenizer = AutoTokenizer.from_pretrained(model_name, device_map="auto", trust_remote_code=True)
+    tokenizer.pad_token = tokenizer.eos_token
+
+    # Run generation on each context of the dataset
+    predictions = []
+    gt_answers = []
+    for i, example in tqdm(enumerate(ds), total=len(ds)):
+        input_text, gt_answer_text = formatter(example)
+        inputs = tokenizer(input_text, return_tensors="pt", truncation=True).to(device)
+        if max_context_length is not None:
+            inputs = {k: v[:, :max_context_length] for k, v in inputs.items()}
+        if max_new_tokens is None:
+            max_new_tokens = 16 * 1024 - inputs["input_ids"].shape[1] # use 16k for max length for now
+
+        # Run generation
+        with press(model) if press is not None else contextlib.nullcontext():
+            output = model.generate(
+                inputs["input_ids"],
+                attention_mask=inputs["attention_mask"],
+                max_new_tokens=max_new_tokens,
+                do_sample=False,
+                use_cache=True,
+                output_attentions=output_attentions(press),
+            )
+
+        pred = tokenizer.batch_decode(output, skip_special_tokens=True)[0]
+        predictions.append(pred)
+        gt_answers.append(gt_answer_text)
+
+    # Save the predicted answer and the ground truth answer to a json file
+    # save_obj = {
+    #     "predictions": predictions,
+    #     "gt_answers": gt_answers,
+    # }
+    # with open(str(save_filename), "w") as f:
+    #     json.dump(save_obj, f)
+    save_objs = [
+        {
+            "predictions": pred,
+            "gt_answers": gt_answer_text,
+        }
+        for pred, gt_answer_text in zip(predictions, gt_answers)
+    ]
+    with open(str(save_filename), "w") as f:
+        for obj in save_objs:
+            f.write(json.dumps(obj) + "\n")
+    print(f"Results saved to {save_filename}")
+
+    # Calculate metrics
+    metrics = scorer(predictions, gt_answers)
+    with open(str(score_filename), "w") as f:
+        json.dump(metrics, f)
+    print(metrics)
+
+
+if __name__ == "__main__":
+    cache_dir = "/fs/nexus-scratch/minghui/.cache/huggingface"
+    if not os.environ.get("HF_HOME"):
+        os.environ["HF_HOME"] = cache_dir
+    Fire(evaluate)

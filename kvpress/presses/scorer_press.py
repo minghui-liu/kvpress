@@ -82,7 +82,7 @@ class ScorerPress(BasePress):
         attentions: torch.Tensor,
         kwargs: dict,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-
+ 
         if self.cache_budget == 0:
             return keys, values
 
