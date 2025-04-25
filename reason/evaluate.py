@@ -19,6 +19,7 @@ from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
 
 from gsm8k import gsm8k_formatter, gsm8k_scorer
+from folio import folio_formatter, folio_scorer
 
 from kvpress import (
     AdaKVPress,
@@ -44,14 +45,17 @@ logger = logging.getLogger(__name__)
 
 DATASET_DICT = {
     "gsm8k": "openai/gsm8k",
+    "folio": "yale-nlp/folio",
 }
 
 FORMATTER_DICT = {
     "gsm8k": gsm8k_formatter,
+    "folio": folio_formatter,
 }
 
 SCORER_DICT = {
     "gsm8k": gsm8k_scorer,
+    "folio": folio_scorer,
 }
 
 PRESS_DICT = {
@@ -75,6 +79,7 @@ def output_attentions(press: BasePress):
 def evaluate(
     dataset: str,
     data_dir: Optional[str] = None,
+    data_split: str = "test",
     model_name: str = "meta-llama/Meta-Llama-3.1-8B-Instruct",
     device: Optional[str] = None,
     press_name: str = "knorm",
@@ -94,6 +99,8 @@ def evaluate(
         Dataset to evaluate
     data_dir : str, optional
         Subdirectory of the dataset to evaluate, by default None
+    data_split : str, optional
+        Split of the dataset to evaluate, by default "test"
     model_name : str, optional
         Model to use, by default "meta-llama/Meta-Llama-3.1-8B-Instruct"
     device : str, optional
@@ -148,7 +155,7 @@ def evaluate(
         return
 
     # Load dataset
-    ds = load_dataset(DATASET_DICT[dataset], data_dir=data_dir, split="test")
+    ds = load_dataset(DATASET_DICT[dataset], data_dir=data_dir, split=data_split)
     if fraction < 1.0:
         ds = ds.shuffle(seed=42).select(range(int(len(ds) * fraction)))
     
@@ -157,26 +164,6 @@ def evaluate(
     press = PRESS_DICT[press_name]
     formatter = FORMATTER_DICT[dataset]
     scorer = SCORER_DICT[dataset]
-
-    # set the compression ratio
-    # if isinstance(press, (DuoAttentionPress)):
-    #     press.head_compression_ratio = compression_ratio
-    # elif isinstance(press, (ComposedPress)):
-    #     for ps in press.presses:
-    #         if isinstance(ps, (ThinKPress)):
-    #             ps.key_channel_compression_ratio = key_channel_compression_ratio
-    #             save_filename = save_filename.with_name(
-    #                 save_filename.stem + f"__channel{key_channel_compression_ratio}" + save_filename.suffix
-    #             )
-    #         else:
-    #             ps.compression_ratio = compression_ratio  # type:ignore[attr-defined]
-    # elif isinstance(press, (ThinKPress)):
-    #     press.key_channel_compression_ratio = key_channel_compression_ratio
-    #     save_filename = save_filename.with_name(
-    #         save_filename.stem + f"__channel{key_channel_compression_ratio}" + save_filename.suffix
-    #     )
-    # else:
-    #     press.compression_ratio = compression_ratio  # type:ignore[attr-defined]
 
     # Set the cache budget for the press
     press.cache_budget = cache_budget
@@ -228,13 +215,6 @@ def evaluate(
         predictions.append(pred)
         gt_answers.append(gt_answer_text)
 
-    # Save the predicted answer and the ground truth answer to a json file
-    # save_obj = {
-    #     "predictions": predictions,
-    #     "gt_answers": gt_answers,
-    # }
-    # with open(str(save_filename), "w") as f:
-    #     json.dump(save_obj, f)
     save_objs = [
         {
             "predictions": pred,
