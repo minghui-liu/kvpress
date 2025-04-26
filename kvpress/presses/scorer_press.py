@@ -69,7 +69,6 @@ class ScorerPress(BasePress):
         # Prune keys and values
         keys = keys.gather(2, indices).contiguous()
         values = values.gather(2, indices).contiguous()
-
         return keys, values
     
 
@@ -86,24 +85,17 @@ class ScorerPress(BasePress):
         if self.cache_budget == 0:
             return keys, values
 
-        q_len = hidden_states.shape[1]
-        if self.cache_budget >= q_len:
+        kv_len = keys.shape[2]
+        if self.cache_budget >= kv_len:
             return keys, values
 
         # Compute scores
         scores = self.score(module, hidden_states, keys, values, attentions, kwargs)
-        
-        # Get index of KV pairs with the lowest score
-        index_to_remove = scores.argmin(scores, dim=-1)
-        index_to_remove = index_to_remove.unsqueeze(-1).expand(-1, -1, -1, module.head_dim)
+        # Get indices of KV pairs with the lowest scores
+        indices = scores.topk(self.cache_budget, dim=-1).indices
+        indices = indices.unsqueeze(-1).expand(-1, -1, -1, module.head_dim)
 
         # Prune keys and values
-        keys = torch.cat([
-                keys[:, :index_to_remove, :],
-                keys[:, index_to_remove + 1 :, :],
-            ], dim=1)
-        values = torch.cat([
-                values[:, :index_to_remove, :],
-                values[:, index_to_remove + 1 :, :],
-            ], dim=1)
+        keys = keys.gather(2, indices).contiguous()
+        values = values.gather(2, indices).contiguous()
         return keys, values
