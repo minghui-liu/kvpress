@@ -21,6 +21,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
 from gsm8k import gsm8k_formatter, gsm8k_scorer
 from folio import folio_formatter, folio_scorer
 from strategyqa import strategyqa_formatter, strategyqa_scorer
+from logiqa import logiqa_formatter, logiqa_scorer
 
 from kvpress import (
     AdaKVPress,
@@ -48,18 +49,21 @@ DATASET_DICT = {
     "gsm8k": "openai/gsm8k",
     "folio": "yale-nlp/folio",
     "strategyqa": "ChilleD/StrategyQA",
+    "logiqa": "lucasmccabe/logiqa",
 }
 
 FORMATTER_DICT = {
     "gsm8k": gsm8k_formatter,
     "folio": folio_formatter,
     "strategyqa": strategyqa_formatter,
+    "logiqa": logiqa_formatter,
 }
 
 SCORER_DICT = {
     "gsm8k": gsm8k_scorer,
     "folio": folio_scorer,
     "strategyqa": strategyqa_scorer,
+    "logiqa": logiqa_scorer,
 }
 
 PRESS_DICT = {
