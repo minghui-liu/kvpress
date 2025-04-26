@@ -155,8 +155,8 @@ def evaluate(
         # load the results and evaluate the metrics
         with open(str(save_filename), "r") as f:
             save_obj = [json.loads(line) for line in f.readlines()]
-        predictions = [obj["predictions"] for obj in save_obj]
-        gt_answers = [obj["gt_answers"] for obj in save_obj]
+        predictions = [obj["response"] for obj in save_obj]
+        gt_answers = [obj["gt_answer"] for obj in save_obj]
         metrics = SCORER_DICT[dataset](predictions, gt_answers)
         with open(str(score_filename), "w") as f:
             json.dump(metrics, f)
@@ -226,13 +226,16 @@ def evaluate(
         pred = tokenizer.decode(output[pred_start:], skip_special_tokens=True)
         predictions.append(pred)
         gt_answers.append(gt_answer_text)
-        save_objs.append(
+        
+        save_obj = example.copy()
+        save_obj.extend(
             {
-                "input": input_text,
-                "predictions": pred,
-                "gt_answers": gt_answer_text,
+                "input_text": input_text,
+                "response": pred,
+                "gt_answer": gt_answer_text,
             }
         )
+        save_objs.append(save_obj)
 
     with open(str(save_filename), "w") as f:
         for obj in save_objs:
