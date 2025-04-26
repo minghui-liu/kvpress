@@ -20,6 +20,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
 
 from gsm8k import gsm8k_formatter, gsm8k_scorer
 from folio import folio_formatter, folio_scorer
+from strategyqa import strategyqa_formatter, strategyqa_scorer
 
 from kvpress import (
     AdaKVPress,
@@ -46,16 +47,19 @@ logger = logging.getLogger(__name__)
 DATASET_DICT = {
     "gsm8k": "openai/gsm8k",
     "folio": "yale-nlp/folio",
+    "strategyqa": "ChilleD/StrategyQA",
 }
 
 FORMATTER_DICT = {
     "gsm8k": gsm8k_formatter,
     "folio": folio_formatter,
+    "strategyqa": strategyqa_formatter,
 }
 
 SCORER_DICT = {
     "gsm8k": gsm8k_scorer,
     "folio": folio_scorer,
+    "strategyqa": strategyqa_scorer,
 }
 
 PRESS_DICT = {
@@ -80,12 +84,13 @@ def evaluate(
     dataset: str,
     data_dir: Optional[str] = None,
     data_split: str = "test",
-    model_name: str = "meta-llama/Meta-Llama-3.1-8B-Instruct",
+    # model_name: str = "meta-llama/Meta-Llama-3.1-8B-Instruct",
+    model_name: str = "nvidia/Llama-3.1-Nemotron-Nano-8B-v1",
     device: Optional[str] = None,
     press_name: str = "knorm",
     cache_budget: int = 1024,
     fraction: float = 1.0,
-    max_new_tokens: Optional[int] = 512,
+    max_new_tokens: Optional[int] = 1024,
     max_context_length: Optional[int] = None,
     compression_ratio: float = 0.1,
     key_channel_compression_ratio: float = 0.5,
@@ -158,7 +163,7 @@ def evaluate(
     ds = load_dataset(DATASET_DICT[dataset], data_dir=data_dir, split=data_split)
     if fraction < 1.0:
         ds = ds.shuffle(seed=42).select(range(int(len(ds) * fraction)))
-    
+
     # Load press
     assert press_name in PRESS_DICT
     press = PRESS_DICT[press_name]
@@ -192,6 +197,7 @@ def evaluate(
     # Run generation on each context of the dataset
     predictions = []
     gt_answers = []
+    save_objs = []
     for i, example in tqdm(enumerate(ds), total=len(ds)):
         input_text, gt_answer_text = formatter(example)
         inputs = tokenizer(input_text, return_tensors="pt", truncation=True).to(device)
@@ -202,7 +208,7 @@ def evaluate(
 
         # Run generation
         with press(model) if press is not None else contextlib.nullcontext():
-            output = model.generate(
+            outputs = model.generate(
                 inputs["input_ids"],
                 attention_mask=inputs["attention_mask"],
                 max_new_tokens=max_new_tokens,
@@ -211,17 +217,19 @@ def evaluate(
                 output_attentions=output_attentions(press),
             )
 
-        pred = tokenizer.batch_decode(output, skip_special_tokens=True)[0]
+        output = outputs[0]
+        pred_start = inputs["input_ids"].shape[1]
+        pred = tokenizer.decode(output[pred_start:], skip_special_tokens=True)
         predictions.append(pred)
         gt_answers.append(gt_answer_text)
+        save_objs.append(
+            {
+                "input": input_text,
+                "predictions": pred,
+                "gt_answers": gt_answer_text,
+            }
+        )
 
-    save_objs = [
-        {
-            "predictions": pred,
-            "gt_answers": gt_answer_text,
-        }
-        for pred, gt_answer_text in zip(predictions, gt_answers)
-    ]
     with open(str(save_filename), "w") as f:
         for obj in save_objs:
             f.write(json.dumps(obj) + "\n")

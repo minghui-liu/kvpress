@@ -1,18 +1,18 @@
 import re
-from utils import extract_full_boxed_content, is_number
+from utils import extract_full_boxed_content
 
-folio_prompt = "Given the premises and conclusion, determine whether the conclusion follows from the premises. Answer with True, False or Uncertain."
-# folio_answer_prefix = "Please solve the problem step by step. Choose your final answer from True, False and Uncertain and wrap your final answer in one \"\\boxed{{}}\"."
-folio_answer_prefix = "Choose your final answer from True, False and Uncertain and wrap your final answer in one \"\\boxed{{}}\"."
+strategyqa_prompt = "Given some facts and a related question, answer the question with true or false."
+# strategyqa_answer_prefix = "Please solve the problem step by step. Answer with true or false and wrap your final answer in one \"\\boxed{{}}\"."
+strategyqa_answer_prefix = "Answer with true or false and wrap your final answer in one \"\\boxed{{}}\"."
 
 
-def folio_formatter(example):
+def strategyqa_formatter(example):
     """
-    Format the example for folio dataset.
+    Format the example for strategyqa dataset.
     """
-    input_text = f"{folio_prompt}\nPremises:\n{example['premises']}\nConclusion:\n{example['conclusion']}\n{folio_answer_prefix}"
+    input_text = f"{strategyqa_prompt}\Facts:\n{example['facts']}\Question:\n{example['question']}\n{strategyqa_answer_prefix}"
     # parse four # signs and the following text as the answer
-    answer_text = example["label"]
+    answer_text = str(example["answer"])
 
     return input_text, answer_text
 
@@ -22,6 +22,9 @@ def parse_answer(response):
     Parse the answer text to get the answer.
     """
     response = response.strip()
+
+    if response.lower() in ['true', 'false']:
+        return response.lower()
     
     # CoT strategy
     if 'boxed{' in response:
@@ -72,9 +75,9 @@ def accuracy(predictions, answers):
     return correct / total if total > 0 else 0.0
     
 
-def folio_scorer(predictions, answers):
+def strategyqa_scorer(predictions, answers):
     """
-    Score the prediction for folio dataset.
+    Score the prediction for strategy qa dataset.
     """
     score_dict = {}
     score_dict["accuracy"] = accuracy(predictions, answers)
