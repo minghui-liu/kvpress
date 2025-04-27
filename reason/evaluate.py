@@ -232,7 +232,7 @@ def evaluate(
         gt_answers.append(gt_answer_text)
         
         save_obj = example.copy()
-        save_obj.extend(
+        save_obj.update(
             {
                 "input_text": input_text,
                 "response": pred,

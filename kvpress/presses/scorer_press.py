@@ -35,6 +35,7 @@ class ScorerPress(BasePress):
         keys: torch.Tensor,
         values: torch.Tensor,
         attentions: torch.Tensor,
+        is_prefill: bool,
         kwargs,
     ) -> torch.Tensor:
         """
@@ -61,7 +62,7 @@ class ScorerPress(BasePress):
             return keys, values
 
         # Compute scores
-        scores = self.score(module, hidden_states, keys, values, attentions, kwargs)
+        scores = self.score(module, hidden_states, keys, values, attentions, True, kwargs)
         # Get indices of KV pairs with the lowest scores
         indices = scores.topk(self.cache_budget, dim=-1).indices
         indices = indices.unsqueeze(-1).expand(-1, -1, -1, module.head_dim)
@@ -90,7 +91,7 @@ class ScorerPress(BasePress):
             return keys, values
 
         # Compute scores
-        scores = self.score(module, hidden_states, keys, values, attentions, kwargs)
+        scores = self.score(module, hidden_states, keys, values, attentions, False, kwargs)
         # Get indices of KV pairs with the lowest scores
         indices = scores.topk(self.cache_budget, dim=-1).indices
         indices = indices.unsqueeze(-1).expand(-1, -1, -1, module.head_dim)
