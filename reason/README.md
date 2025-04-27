@@ -17,17 +17,17 @@ cd reason
 ```
 
 ```bash
-python evaluate.py --dataset <dataset_name> --data_dir <data_dir> --model <model_name> --press_name <press_name> --compression_ratio <ratio> 
+python evaluate.py --dataset <dataset_name> --data_dir <data_dir> --model <model_name> --press_name <press_name> --cache_budget <budget> --max_new_tokens <max_new_tokens>
 ```
 
 For instance,
 ```bash
-python evaluate.py --dataset loogle --data_dir shortdep_qa --model meta-llama/Meta-Llama-3.1-8B-Instruct --press_name expected_attention --compression_ratio 0.5
+python evaluate.py --dataset gsm8k --data_split test --model meta-llama/Meta-Llama-3.1-8B-Instruct --press_name knorm --cache_budget 128  --max_new_tokens 512
 ```
 
 - Results (predictions & metrics) are saved in the `results` directory. 
 - All available presses are listed in the `PRESS_DICT` variable in `evaluate.py`. 
-- Additional arguments are --device, --fraction, --max_new_tokens, --max_context_length and --compress_questions. For more information, run `python evaluate.py --help`
+- Additional arguments are --device, --fraction, --max_new_tokens and --max_context_length. For more information, run `python evaluate.py --help`
 - Finally we also provide a bash script `evaluate.sh` to facilitate the evaluation of multiple presses (1 per GPU) with different compression ratios.
 
 
