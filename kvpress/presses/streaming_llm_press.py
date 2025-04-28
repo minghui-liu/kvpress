@@ -36,12 +36,18 @@ class StreamingLLMPress(ScorerPress):
         is_prefill: bool,
         kwargs,
     ) -> torch.Tensor:
-        q_len = hidden_states.shape[1]
-        if is_prefill:
-            assert q_len > self.n_sink, f"Input should contain more tokens than n_sink={self.n_sink}"
         
-        n_pruned = q_len - self.cache_budget
-        scores = torch.ones_like(keys[..., 0])
-        scores[:, :, self.n_sink : self.n_sink + n_pruned] = 0
+        if is_prefill:
+            q_len = hidden_states.shape[1]
+            assert q_len > self.n_sink, f"Input should contain more tokens than n_sink={self.n_sink}"
+            n_pruned = q_len - self.cache_budget
+            scores = torch.ones_like(keys[..., 0])
+            scores[:, :, self.n_sink : self.n_sink + n_pruned] = 0
+        else:
+            # during generation, we keep the first n_sink tokens and the last n_local tokens
+            n_local = self.cache_budget - self.n_sink
+            scores = torch.zeros_like(keys[..., 0])
+            scores[:, :, : self.n_sink] = 1
+            scores[:, :, -n_local:] = 1
 
         return scores
