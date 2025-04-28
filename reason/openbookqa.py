@@ -2,7 +2,7 @@ import re
 from utils import extract_full_boxed_content, is_number
 
 openbookqa_prompt = "Given a piece of fact and a question, pick the correct answer choice."
-openbookqa_answer_prefix = "Answer with the answer choice label and wrap your final answer in one \"\\boxed{{}}\"."
+openbookqa_answer_prefix = "Solve the problem step by step. Answer with the answer choice label and wrap your final answer in one \"\\boxed{{}}\"."
 
 
 def openbookqa_formatter(example):

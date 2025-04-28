@@ -2,8 +2,7 @@ import re
 from utils import extract_full_boxed_content
 
 strategyqa_prompt = "Given some facts and a related question, answer the question with true or false."
-# strategyqa_answer_prefix = "Please solve the problem step by step. Answer with true or false and wrap your final answer in one \"\\boxed{{}}\"."
-strategyqa_answer_prefix = "Answer with true or false and wrap your final answer in one \"\\boxed{{}}\"."
+strategyqa_answer_prefix = "Solve the problem step by step. Answer with true or false and wrap your final answer in one \"\\boxed{{}}\"."
 
 
 def strategyqa_formatter(example):

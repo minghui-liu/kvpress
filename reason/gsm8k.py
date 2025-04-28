@@ -1,7 +1,7 @@
 import re
 from utils import extract_full_boxed_content, is_number
 
-gsm8k_prompt = "\nPlease solve the problem step by step. Wrap your final answer in one \"\\boxed{{}}\"."
+gsm8k_prompt = "\nSolve the problem step by step. Wrap your final answer in one \"\\boxed{{}}\"."
 
 
 def gsm8k_formatter(example):
