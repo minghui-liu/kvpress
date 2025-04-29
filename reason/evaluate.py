@@ -11,6 +11,7 @@ from typing import Optional
 from kvpress.presses.base_press import BasePress
 from kvpress.presses.key_rerotation_press import KeyRerotationPress
 from kvpress.presses.per_layer_compression_press import PerLayerCompressionPress
+from kvpress.presses.h2o_press import H2OPress
 import torch
 from datasets import load_dataset
 from fire import Fire
@@ -72,18 +73,17 @@ SCORER_DICT = {
 
 PRESS_DICT = {
     "knorm": KnormPress(),
-    "observed_attention": ObservedAttentionPress(),
+    "h2o": H2OPress(),
     "random": RandomPress(),
-    "snapkv": SnapKVPress(),
     "streaming_llm": StreamingLLMPress(),
 }
 
 
 def output_attentions(press: BasePress):
-    if isinstance(press, ObservedAttentionPress):
+    if isinstance(press, H2OPress):
         return True
     if isinstance(press, (KeyRerotationPress, PerLayerCompressionPress)) and isinstance(
-        press.press, ObservedAttentionPress
+        press.press, H2OPress
     ):
         return True
     return False
@@ -183,7 +183,7 @@ def evaluate(
 
     # Initialize pipeline with the correct attention implementation
     model_kwargs = {"torch_dtype": "auto"}
-    if isinstance(press, ObservedAttentionPress):
+    if isinstance(press, H2OPress):
         model_kwargs["attn_implementation"] = "eager"
     else:
         try:
