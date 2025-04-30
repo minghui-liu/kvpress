@@ -24,6 +24,7 @@ from folio import folio_formatter, folio_scorer
 from strategyqa import strategyqa_formatter, strategyqa_scorer
 from logiqa import logiqa_formatter, logiqa_scorer
 from openbookqa import openbookqa_formatter, openbookqa_scorer
+from aime25 import aime25_formatter, aime25_scorer
 
 from kvpress import (
     AdaKVPress,
@@ -53,6 +54,7 @@ DATASET_DICT = {
     "strategyqa": "ChilleD/StrategyQA",
     "logiqa": "lucasmccabe/logiqa",
     "openbookqa": "allenai/openbookqa",
+    "aime25": "math-ai/aime25",
 }
 
 FORMATTER_DICT = {
@@ -60,7 +62,8 @@ FORMATTER_DICT = {
     "folio": folio_formatter,
     "strategyqa": strategyqa_formatter,
     "logiqa": logiqa_formatter,
-    "openbookqa": openbookqa_formatter
+    "openbookqa": openbookqa_formatter,
+    "aime25": aime25_formatter,
 }
 
 SCORER_DICT = {
@@ -69,6 +72,7 @@ SCORER_DICT = {
     "strategyqa": strategyqa_scorer,
     "logiqa": logiqa_scorer,
     "openbookqa": openbookqa_scorer,
+    "aime25": aime25_scorer,
 }
 
 PRESS_DICT = {
