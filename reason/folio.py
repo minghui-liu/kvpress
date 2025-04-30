@@ -2,9 +2,7 @@ import re
 from utils import extract_full_boxed_content, is_number
 
 folio_prompt = "Given the premises and conclusion, determine whether the conclusion follows from the premises. Answer with True, False or Uncertain."
-folio_answer_prefix = "Solve the problem step by step. Choose your final answer from True, False and Uncertain and wrap your final answer in one \"\\boxed{{}}\"."
-# folio_answer_prefix = "Choose your final answer from True, False and Uncertain and wrap your final answer in one \"\\boxed{{}}\"."
-
+folio_answer_prefix = "Solve the problem step by step. Choose your final answer from True, False and Uncertain and wrap your final answer in \"\\boxed{}\"."
 
 def folio_formatter(example):
     """
