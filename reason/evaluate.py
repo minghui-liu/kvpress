@@ -27,6 +27,7 @@ from logiqa import logiqa_formatter, logiqa_scorer
 from openbookqa import openbookqa_formatter, openbookqa_extractor, openbookqa_scorer
 from aime25 import aime25_formatter, aime25_scorer
 from commonsenseqa import commonsenseqa_formatter, commonsenseqa_extractor, commonsenseqa_scorer
+from math500 import math500_formatter, math500_scorer
 
 from kvpress import (
     AdaKVPress,
@@ -58,6 +59,7 @@ DATASET_DICT = {
     "openbookqa": "allenai/openbookqa",
     "aime25": "math-ai/aime25",
     "commonsenseqa": "tau/commonsenseqa",
+    "math500": "HuggingFaceH4/MATH-500",
 }
 
 FORMATTER_DICT = {
@@ -68,6 +70,7 @@ FORMATTER_DICT = {
     "openbookqa": openbookqa_formatter,
     "aime25": aime25_formatter,
     "commonsenseqa": commonsenseqa_formatter,
+    "math500": math500_formatter,
 }
 
 EXTRACTOR_DICT = {
@@ -78,6 +81,7 @@ EXTRACTOR_DICT = {
     "openbookqa": openbookqa_extractor,
     "aime25": default_extractor,
     "commonsenseqa": commonsenseqa_extractor,
+    "math500": default_extractor,
 }
 
 SCORER_DICT = {
@@ -88,6 +92,7 @@ SCORER_DICT = {
     "openbookqa": openbookqa_scorer,
     "aime25": aime25_scorer,
     "commonsenseqa": commonsenseqa_scorer,
+    "math500": math500_scorer,
 }
 
 PRESS_DICT = {
