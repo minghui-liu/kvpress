@@ -26,6 +26,7 @@ from strategyqa import strategyqa_formatter, strategyqa_extractor, strategyqa_sc
 from logiqa import logiqa_formatter, logiqa_scorer
 from openbookqa import openbookqa_formatter, openbookqa_extractor, openbookqa_scorer
 from aime25 import aime25_formatter, aime25_scorer
+from commonsenseqa import commonsenseqa_formatter, commonsenseqa_extractor, commonsenseqa_scorer
 
 from kvpress import (
     AdaKVPress,
@@ -56,7 +57,7 @@ DATASET_DICT = {
     "logiqa": "lucasmccabe/logiqa",
     "openbookqa": "allenai/openbookqa",
     "aime25": "math-ai/aime25",
-    "math500": "HuggingFaceH4/MATH-500"
+    "commonsenseqa": "tau/commonsenseqa",
 }
 
 FORMATTER_DICT = {
@@ -66,6 +67,7 @@ FORMATTER_DICT = {
     "logiqa": logiqa_formatter,
     "openbookqa": openbookqa_formatter,
     "aime25": aime25_formatter,
+    "commonsenseqa": commonsenseqa_formatter,
 }
 
 EXTRACTOR_DICT = {
@@ -75,6 +77,7 @@ EXTRACTOR_DICT = {
     "logiqa": default_extractor,
     "openbookqa": openbookqa_extractor,
     "aime25": default_extractor,
+    "commonsenseqa": commonsenseqa_extractor,
 }
 
 SCORER_DICT = {
@@ -84,6 +87,7 @@ SCORER_DICT = {
     "logiqa": logiqa_scorer,
     "openbookqa": openbookqa_scorer,
     "aime25": aime25_scorer,
+    "commonsenseqa": commonsenseqa_scorer,
 }
 
 PRESS_DICT = {
@@ -107,8 +111,8 @@ def evaluate(
     dataset: str,
     data_dir: Optional[str] = None,
     data_split: str = "test",
-    model_name: str = "meta-llama/Meta-Llama-3.1-8B-Instruct",
-    # model_name: str = "nvidia/Llama-3.1-Nemotron-Nano-8B-v1",
+    # model_name: str = "meta-llama/Meta-Llama-3.1-8B-Instruct",
+    model_name: str = "nvidia/Llama-3.1-Nemotron-Nano-8B-v1",
     device: Optional[str] = None,
     press_name: str = "knorm",
     cache_budget: int = 1024,
