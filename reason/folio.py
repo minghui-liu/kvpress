@@ -15,11 +15,14 @@ def folio_formatter(example):
     return input_text, answer_text
 
 
-def parse_answer(response):
+def folio_extractor(response):
     """
     Parse the answer text to get the answer.
     """
     response = response.strip()
+
+    if response.lower() in ['true', 'false', 'uncertain']:
+        return response
     
     # CoT strategy
     if 'boxed{' in response:
@@ -59,9 +62,6 @@ def accuracy(predictions, answers):
     """
     correct = 0
     total = len(predictions)
-    
-    # parse the predicted answer 
-    predictions = [parse_answer(pred).strip() for pred in predictions]
 
     for prediction, answer in zip(predictions, answers):
         if prediction.lower() == answer.lower():

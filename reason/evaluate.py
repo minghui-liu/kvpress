@@ -19,11 +19,12 @@ from fire import Fire
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
 
+from utils import default_extractor
 from gsm8k import gsm8k_formatter, gsm8k_scorer
-from folio import folio_formatter, folio_scorer
-from strategyqa import strategyqa_formatter, strategyqa_scorer
+from folio import folio_formatter, folio_extractor, folio_scorer
+from strategyqa import strategyqa_formatter, strategyqa_extractor, strategyqa_scorer
 from logiqa import logiqa_formatter, logiqa_scorer
-from openbookqa import openbookqa_formatter, openbookqa_scorer
+from openbookqa import openbookqa_formatter, openbookqa_extractor, openbookqa_scorer
 from aime25 import aime25_formatter, aime25_scorer
 
 from kvpress import (
@@ -55,6 +56,7 @@ DATASET_DICT = {
     "logiqa": "lucasmccabe/logiqa",
     "openbookqa": "allenai/openbookqa",
     "aime25": "math-ai/aime25",
+    "math500": "HuggingFaceH4/MATH-500"
 }
 
 FORMATTER_DICT = {
@@ -64,6 +66,15 @@ FORMATTER_DICT = {
     "logiqa": logiqa_formatter,
     "openbookqa": openbookqa_formatter,
     "aime25": aime25_formatter,
+}
+
+EXTRACTOR_DICT = {
+    "gsm8k": default_extractor,
+    "folio": folio_extractor,
+    "strategyqa": strategyqa_extractor,
+    "logiqa": default_extractor,
+    "openbookqa": openbookqa_extractor,
+    "aime25": default_extractor,
 }
 
 SCORER_DICT = {
@@ -160,102 +171,97 @@ def evaluate(
     if save_filename.exists():
         logger.warning(f"Results already exist at {save_filename}")
         print(f"Results already exist. Loading results from {save_filename}")
-        # load the results and evaluate the metrics
-        with open(str(save_filename), "r") as f:
-            save_obj = [json.loads(line) for line in f.readlines()]
-        predictions = [obj["response"] for obj in save_obj]
-        gt_answers = [obj["gt_answer"] for obj in save_obj]
-        metrics = SCORER_DICT[dataset](predictions, gt_answers)
-        with open(str(score_filename), "w") as f:
-            json.dump(metrics, f)
-        print(metrics)
-        return
-
-    # Load dataset
-    ds = load_dataset(DATASET_DICT[dataset], data_dir=data_dir, split=data_split)
-    if fraction < 1.0:
-        ds = ds.shuffle(seed=42).select(range(int(len(ds) * fraction)))
-
-    # Load press
-    assert press_name in PRESS_DICT
-    press = PRESS_DICT[press_name]
-    formatter = FORMATTER_DICT[dataset]
-    scorer = SCORER_DICT[dataset]
-
-    # Set the cache budget for the press
-    press.cache_budget = cache_budget
-
-    # Initialize pipeline with the correct attention implementation
-    model_kwargs = {"torch_dtype": "auto"}
-    if isinstance(press, H2OPress):
-        model_kwargs["attn_implementation"] = "eager"
     else:
-        try:
-            import flash_attn  # noqa: F401
-            model_kwargs["attn_implementation"] = "flash_attention_2"
-        except ImportError:
-            pass
+        # Load dataset
+        ds = load_dataset(DATASET_DICT[dataset], data_dir=data_dir, split=data_split)
+        if fraction < 1.0:
+            ds = ds.shuffle(seed=42).select(range(int(len(ds) * fraction)))
 
-    # Load model
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name,
-        device_map="auto",
-        trust_remote_code=True,
-        **model_kwargs,
-    )
-    tokenizer = AutoTokenizer.from_pretrained(model_name, device_map="auto", trust_remote_code=True)
-    tokenizer.pad_token = tokenizer.eos_token
+        # Load press
+        assert press_name in PRESS_DICT
+        press = PRESS_DICT[press_name]
+        formatter = FORMATTER_DICT[dataset]
+        extractor = EXTRACTOR_DICT[dataset] 
 
-    # Run generation on each context of the dataset
-    predictions = []
-    gt_answers = []
-    save_objs = []
-    for i, example in tqdm(enumerate(ds), total=len(ds)):
-        input_text, gt_answer_text = formatter(example)
-        inputs = tokenizer(input_text, return_tensors="pt", truncation=True).to(device)
-        if max_context_length is not None:
-            inputs = {k: v[:, :max_context_length] for k, v in inputs.items()}
-        if max_new_tokens is None:
-            max_new_tokens = 16 * 1024 - inputs["input_ids"].shape[1] # use 16k for max length for now
+        # Set the cache budget for the press
+        press.cache_budget = cache_budget
 
-        # Run generation
-        with press(model) if press is not None else contextlib.nullcontext():
-            outputs = model.generate(
-                inputs["input_ids"],
-                attention_mask=inputs["attention_mask"],
-                max_new_tokens=max_new_tokens,
-                do_sample=False,
-                use_cache=True,
-                output_attentions=output_attentions(press),
-            )
+        # Initialize pipeline with the correct attention implementation
+        model_kwargs = {"torch_dtype": "auto"}
+        if isinstance(press, H2OPress):
+            model_kwargs["attn_implementation"] = "eager"
+        else:
+            try:
+                import flash_attn  # noqa: F401
+                model_kwargs["attn_implementation"] = "flash_attention_2"
+            except ImportError:
+                pass
 
-        output = outputs[0]
-        pred_start = inputs["input_ids"].shape[1]
-        pred = tokenizer.decode(output[pred_start:], skip_special_tokens=True)
-        predictions.append(pred)
-        gt_answers.append(gt_answer_text)
-        
-        save_obj = example.copy()
-        save_obj.update(
-            {
-                "input_text": input_text,
-                "response": pred,
-                "gt_answer": gt_answer_text,
-            }
+        # Load model
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            device_map="auto",
+            trust_remote_code=True,
+            **model_kwargs,
         )
-        save_objs.append(save_obj)
+        tokenizer = AutoTokenizer.from_pretrained(model_name, device_map="auto", trust_remote_code=True)
+        tokenizer.pad_token = tokenizer.eos_token
 
-    with open(str(save_filename), "w") as f:
-        for obj in save_objs:
-            f.write(json.dumps(obj) + "\n")
-    print(f"Results saved to {save_filename}")
+        # Run generation on each context of the dataset
+        save_objs = []
+        for i, example in tqdm(enumerate(ds), total=len(ds)):
+            input_text, gt_answer_text = formatter(example)
+            inputs = tokenizer(input_text, return_tensors="pt", truncation=True).to(device)
+            if max_context_length is not None:
+                inputs = {k: v[:, :max_context_length] for k, v in inputs.items()}
+            if max_new_tokens is None:
+                max_new_tokens = 16 * 1024 - inputs["input_ids"].shape[1] # use 16k for max length for now
+
+            # Run generation
+            with press(model) if press is not None else contextlib.nullcontext():
+                outputs = model.generate(
+                    inputs["input_ids"],
+                    attention_mask=inputs["attention_mask"],
+                    max_new_tokens=max_new_tokens,
+                    do_sample=False,
+                    use_cache=True,
+                    output_attentions=output_attentions(press),
+                )
+
+            pred_start = inputs["input_ids"].shape[1]
+            response = tokenizer.decode(outputs[0][pred_start:], skip_special_tokens=True)
+            model_answer = extractor(response)
+            
+            save_obj = example.copy()
+            save_obj.update(
+                {
+                    "input_text": input_text,
+                    "response": response,
+                    "extracted_answer": model_answer,
+                    "gt_answer": gt_answer_text,
+                }
+            )
+            save_objs.append(save_obj)
+
+        with open(str(save_filename), "w") as f:
+            for obj in save_objs:
+                f.write(json.dumps(obj) + "\n")
+        print(f"Results saved to {save_filename}")
+    # end of the if save_filename.exists()
+
+    # load the results and evaluate the metrics
+    with open(str(save_filename), "r") as f:
+        save_obj = [json.loads(line) for line in f.readlines()]
+    extracted_answers = [obj["extracted_answer"] for obj in save_obj]
+    gt_answers = [obj["gt_answer"] for obj in save_obj]
 
     # Calculate metrics
-    metrics = scorer(predictions, gt_answers)
+    scorer = SCORER_DICT[dataset]
+    metrics = scorer(extracted_answers, gt_answers)
     with open(str(score_filename), "w") as f:
         json.dump(metrics, f)
     print(metrics)
-
+    return
 
 if __name__ == "__main__":
     cache_dir = "/fs/nexus-scratch/minghui/.cache/huggingface"

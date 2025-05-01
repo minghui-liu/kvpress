@@ -1,29 +1,29 @@
 import re
-from utils import extract_full_boxed_content
+from utils import extract_full_boxed_content, is_number
 
-strategyqa_prompt = "Given some facts and a related question, answer the question with true or false."
-strategyqa_answer_prefix = "Solve the problem step by step. Answer with true or false and wrap your final answer in \"\\boxed{}\"."
+math500_prompt = "\nSolve the problem step by step. Wrap your final answer in \"\\boxed{}\"."
 
 
-def strategyqa_formatter(example):
+def math500_formatter(example):
     """
-    Format the example for strategyqa dataset.
+    Format the example for math500 dataset.
     """
-    input_text = f"{strategyqa_prompt}\Facts:\n{example['facts']}\Question:\n{example['question']}\n{strategyqa_answer_prefix}"
-    # parse four # signs and the following text as the answer
-    answer_text = str(example["answer"])
+    question_text = example["problem"] + math500_prompt
+    answer_text = example["answer"]
 
-    return input_text, answer_text
+    return question_text, answer_text
 
 
-def strategyqa_extractor(response):
+def parse_answer(response):
     """
     Parse the answer text to get the answer.
     """
     response = response.strip()
 
-    if response.lower() in ['true', 'false']:
-        return response.lower()
+    # Direct Strategy Open-ended
+    # 1
+    if is_number(response):
+        return response
     
     # CoT strategy
     if 'boxed{' in response:
@@ -63,17 +63,20 @@ def accuracy(predictions, answers):
     """
     correct = 0
     total = len(predictions)
+    
+    # parse the predicted answer 
+    predictions = [parse_answer(pred).strip() for pred in predictions]
 
     for prediction, answer in zip(predictions, answers):
-        if prediction.lower() == answer.lower():
+        if prediction == answer:
             correct += 1
 
     return correct / total if total > 0 else 0.0
     
 
-def strategyqa_scorer(predictions, answers):
+def math500_scorer(predictions, answers):
     """
-    Score the prediction for strategy qa dataset.
+    Score the prediction for math500 dataset.
     """
     score_dict = {}
     score_dict["accuracy"] = accuracy(predictions, answers)

@@ -20,7 +20,7 @@ def openbookqa_formatter(example):
     return input_text, answer_text
 
 
-def parse_answer(response):
+def openbookqa_extractor(response):
     """
     Parse the answer text to get the answer.
     """
@@ -81,10 +81,7 @@ def accuracy(predictions, answers):
     """
     correct = 0
     total = len(predictions)
-    
-    # parse the predicted answer 
-    predictions = [parse_answer(pred).strip() for pred in predictions]
-
+ 
     for prediction, answer in zip(predictions, answers):
         if prediction.lower() == answer.lower():
             correct += 1
