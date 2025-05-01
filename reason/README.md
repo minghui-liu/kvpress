@@ -12,6 +12,10 @@ This directory contains a set of scripts to evaluate the performance of differen
 
 Please refer to the huggingface page and the original paper of each dataset for more information on how the Hugging Face dataset was generated.
 
+## Installation
+Follow the instuction in the README file of the root folder of KVPress to install KVPress.
+
+
 ## Usage
 
 To evaluate a press on a dataset, you can run the following command:
@@ -55,4 +59,4 @@ Where:
 - $dataset_extractor is the function that extracts the model's answer from the model's response string. `utils.py` has a `default_extractor` function that you can use if the dataset does not need any special extraction method.
 - metric functions are the functions for different metrics used to evaluate the answers
 
-Finally add the new dataset's formatter, extractor and scorer to the corresponding dictionaries in `evalute.py`.
+Finally add the new dataset's formatter, extractor and scorer to the corresponding dictionaries in `evaluate.py`.
