@@ -116,12 +116,13 @@ def evaluate(
     dataset: str,
     data_dir: Optional[str] = None,
     data_split: str = "test",
-    # model_name: str = "meta-llama/Meta-Llama-3.1-8B-Instruct",
-    model_name: str = "nvidia/Llama-3.1-Nemotron-Nano-8B-v1",
+    model_name: str = "meta-llama/Meta-Llama-3.1-8B-Instruct",
+    # model_name: str = "nvidia/Llama-3.1-Nemotron-Nano-8B-v1",
     device: Optional[str] = None,
     press_name: str = "knorm",
-    cache_budget: int = 1024,
+    cache_budget: int = 4096,
     fraction: float = 1.0,
+    num_samples: int = 0,
     max_new_tokens: Optional[int] = 1024,
     max_context_length: Optional[int] = None,
     compression_ratio: float = 0.1,
@@ -160,6 +161,8 @@ def evaluate(
 
     assert dataset in DATASET_DICT, f"No dataset found for {dataset}"
     assert dataset in SCORER_DICT, f"No scorer found for {dataset}"
+
+
     data_dir = str(data_dir) if data_dir else None
 
     if device is None:
@@ -168,10 +171,13 @@ def evaluate(
     save_dir = Path(__file__).parent / "results"
     save_dir.mkdir(exist_ok=True)
     save_filename = save_dir / (
-        "__".join([dataset, data_dir if data_dir else "", model_name.replace("/", "--"), press_name, f"budget{cache_budget}"])
+        "__".join([dataset, data_dir if data_dir else "", model_name.replace("/", "--"), press_name, f"budget{cache_budget}", f"max_new_tokens{max_new_tokens}"])
         + ".jsonl"
     )
-    if fraction < 1.0:
+    assert (fraction) < 1.0 != (num_samples > 0), "Either fraction or num_samples should be set, not both"
+    if num_samples > 0:
+        save_filename = save_filename.with_name(save_filename.stem + f"__num_samples{num_samples}" + save_filename.suffix)
+    elif fraction < 1.0:
         save_filename = save_filename.with_name(save_filename.stem + f"__fraction{fraction:.2f}" + save_filename.suffix)
     if max_context_length is not None:
         save_filename = save_filename.with_name(save_filename.stem + f"__max_context{max_context_length}" + save_filename.suffix)
@@ -183,7 +189,10 @@ def evaluate(
     else:
         # Load dataset
         ds = load_dataset(DATASET_DICT[dataset], data_dir=data_dir, split=data_split)
-        if fraction < 1.0:
+        if num_samples > 0:
+            assert num_samples <= len(ds), f"num_samples {num_samples} is larger than the dataset size {len(ds)}"
+            ds = ds.shuffle(seed=42).select(range(num_samples))
+        elif fraction < 1.0:
             ds = ds.shuffle(seed=42).select(range(int(len(ds) * fraction)))
 
         # Load press
