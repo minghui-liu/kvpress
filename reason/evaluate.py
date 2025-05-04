@@ -30,23 +30,10 @@ from commonsenseqa import commonsenseqa_formatter, commonsenseqa_extractor, comm
 from math500 import math500_formatter, math500_scorer
 
 from kvpress import (
-    AdaKVPress,
-    ChunkKVPress,
-    ComposedPress,
-    CriticalAdaKVPress,
-    CriticalKVPress,
-    DuoAttentionPress,
-    ExpectedAttentionPress,
     KnormPress,
-    ObservedAttentionPress,
     RandomPress,
-    SnapKVPress,
     StreamingLLMPress,
-    ThinKPress,
-    TOVAPress,
-    QFilterPress,
-    PyramidKVPress,
-    FinchPress,
+    FullPress,
 )
 
 logger = logging.getLogger(__name__)
@@ -100,6 +87,7 @@ PRESS_DICT = {
     "h2o": H2OPress(),
     "random": RandomPress(),
     "streaming_llm": StreamingLLMPress(),
+    "full": FullPress(),
 }
 
 
@@ -123,6 +111,7 @@ def evaluate(
     cache_budget: int = 4096,
     fraction: float = 1.0,
     num_samples: int = 0,
+    random_seed: int = 42,
     max_new_tokens: Optional[int] = 1024,
     max_context_length: Optional[int] = None,
     compression_ratio: float = 0.1,
@@ -191,9 +180,9 @@ def evaluate(
         ds = load_dataset(DATASET_DICT[dataset], data_dir=data_dir, split=data_split)
         if num_samples > 0:
             assert num_samples <= len(ds), f"num_samples {num_samples} is larger than the dataset size {len(ds)}"
-            ds = ds.shuffle(seed=42).select(range(num_samples))
+            ds = ds.shuffle(seed=random_seed).select(range(num_samples))
         elif fraction < 1.0:
-            ds = ds.shuffle(seed=42).select(range(int(len(ds) * fraction)))
+            ds = ds.shuffle(seed=random_seed).select(range(int(len(ds) * fraction)))
 
         # Load press
         assert press_name in PRESS_DICT
