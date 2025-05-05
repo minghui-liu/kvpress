@@ -8,8 +8,6 @@ import os
 from pathlib import Path
 from typing import Optional
 
-from kvpress.presses.base_press import BasePress
-from kvpress.presses.h2o_press import H2OPress
 import torch
 from datasets import load_dataset
 from fire import Fire
@@ -32,6 +30,7 @@ from kvpress import (
     RandomPress,
     StreamingLLMPress,
     FullPress,
+    H2OPress,
 )
 
 logger = logging.getLogger(__name__)
