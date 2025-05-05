@@ -36,15 +36,16 @@ from kvpress import (
 
 logger = logging.getLogger(__name__)
 
+# (dataset_name, subset, split)
 DATASET_DICT = {
-    "gsm8k": "openai/gsm8k",
-    "folio": "yale-nlp/folio",
-    "strategyqa": "ChilleD/StrategyQA",
-    "logiqa": "lucasmccabe/logiqa",
-    "openbookqa": "allenai/openbookqa",
-    "aime25": "math-ai/aime25",
-    "commonsenseqa": "tau/commonsenseqa",
-    "math500": "HuggingFaceH4/MATH-500",
+    "gsm8k": ("openai/gsm8k", "main", "test"),
+    "folio": ("yale-nlp/folio", None, "test"),
+    "strategyqa": ("ChilleD/StrategyQA", None, "test"),
+    "logiqa": ("lucasmccabe/logiqa", None, "test"),
+    "openbookqa": ("allenai/openbookqa", "main", "test"),
+    "aime25": ("math-ai/aime25", None, "test"),
+    "commonsenseqa": ("tau/commonsense_qa", None, "test"),
+    "math500": ("HuggingFaceH4/MATH-500", None, "test"),
 }
 
 FORMATTER_DICT = {
@@ -101,7 +102,7 @@ def output_attentions(press: BasePress):
 def evaluate(
     dataset: str,
     data_dir: Optional[str] = None,
-    data_split: str = "test",
+    data_split: str = None,
     model_name: str = "meta-llama/Meta-Llama-3.1-8B-Instruct",
     # model_name: str = "nvidia/Llama-3.1-Nemotron-Nano-8B-v1",
     device: Optional[str] = None,
@@ -112,6 +113,7 @@ def evaluate(
     random_seed: int = 42,
     max_new_tokens: Optional[int] = 1024,
     max_context_length: Optional[int] = None,
+    do_sampling: bool = True,
     compression_ratio: float = 0.1,
     key_channel_compression_ratio: float = 0.5,
 ):
@@ -149,8 +151,9 @@ def evaluate(
     assert dataset in DATASET_DICT, f"No dataset found for {dataset}"
     assert dataset in SCORER_DICT, f"No scorer found for {dataset}"
 
-
-    data_dir = str(data_dir) if data_dir else None
+    hf_name = DATASET_DICT[dataset][0]
+    data_dir = DATASET_DICT[dataset][1] if data_dir is None else data_dir
+    data_split = DATASET_DICT[dataset][2] if data_split is None else data_split
 
     if device is None:
         device = "cuda:0" if torch.cuda.is_available() else "cpu"
@@ -175,7 +178,7 @@ def evaluate(
         print(f"Results already exist. Loading results from {save_filename}")
     else:
         # Load dataset
-        ds = load_dataset(DATASET_DICT[dataset], data_dir=data_dir, split=data_split)
+        ds = load_dataset(hf_name, data_dir=data_dir, split=data_split)
         if num_samples > 0:
             assert num_samples <= len(ds), f"num_samples {num_samples} is larger than the dataset size {len(ds)}"
             ds = ds.shuffle(seed=random_seed).select(range(num_samples))
@@ -224,15 +227,29 @@ def evaluate(
                 max_new_tokens = 16 * 1024 - inputs["input_ids"].shape[1] # use 16k for max length for now
 
             # Run generation
-            with press(model) if press is not None else contextlib.nullcontext():
-                outputs = model.generate(
-                    inputs["input_ids"],
-                    attention_mask=inputs["attention_mask"],
-                    max_new_tokens=max_new_tokens,
-                    do_sample=False,
-                    use_cache=True,
-                    output_attentions=output_attentions(press),
-                )
+            if do_sampling:
+                with press(model) if press is not None else contextlib.nullcontext():
+                    outputs = model.generate(
+                        inputs["input_ids"],
+                        attention_mask=inputs["attention_mask"],
+                        max_new_tokens=max_new_tokens,
+                        do_sample=True,
+                        top_p=0.9,
+                        temperature=0.7,
+                        repetition_penalty=1.2,
+                        use_cache=True,
+                        output_attentions=output_attentions(press),
+                    )
+            else:
+                with press(model) if press is not None else contextlib.nullcontext():
+                    outputs = model.generate(
+                        inputs["input_ids"],
+                        attention_mask=inputs["attention_mask"],
+                        max_new_tokens=max_new_tokens,
+                        do_sample=False,
+                        use_cache=True,
+                        output_attentions=output_attentions(press),
+                    )
 
             pred_start = inputs["input_ids"].shape[1]
             response = tokenizer.decode(outputs[0][pred_start:], skip_special_tokens=True)
