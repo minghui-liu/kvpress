@@ -15,6 +15,9 @@ Please refer to the huggingface page and the original paper of each dataset for 
 ## Installation
 Follow the instuction in the README file of the root folder of KVPress to install KVPress.
 
+If you want to install flash-attn but the process is too slow, then this post might be helpful:
+https://github.com/simonw/til/blob/main/python/installing-flash-attention.md
+
 
 ## Usage
 

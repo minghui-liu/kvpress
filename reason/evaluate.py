@@ -201,6 +201,7 @@ def evaluate(
             try:
                 import flash_attn  # noqa: F401
                 model_kwargs["attn_implementation"] = "flash_attention_2"
+                print("Using flash attention")
             except ImportError:
                 pass
 
@@ -238,6 +239,15 @@ def evaluate(
             pred_start = inputs["input_ids"].shape[1]
             response = tokenizer.decode(outputs[0][pred_start:], skip_special_tokens=True)
             model_answer = extractor(response)
+
+            # calculate the compression ratio
+            input_token_count = inputs["input_ids"].shape[1]
+            output_token_count = outputs[0].shape[1] - input_token_count
+            total_token_count = outputs[0].shape[1]
+            if total_token_count <= cache_budget:
+                actual_compression = 1.0
+            else:
+                actual_compression = cache_budget / total_token_count
             
             save_obj = example.copy()
             save_obj.update(
@@ -246,6 +256,11 @@ def evaluate(
                     "response": response,
                     "extracted_answer": model_answer,
                     "gt_answer": gt_answer_text,
+                    "input_token_count": input_token_count,
+                    "output_token_count": output_token_count,
+                    "total_token_count": total_token_count,
+                    "cache_budget": cache_budget,
+                    "compression_ratio": actual_compression,
                 }
             )
             save_objs.append(save_obj)
@@ -265,6 +280,23 @@ def evaluate(
     # Calculate metrics
     scorer = SCORER_DICT[dataset]
     metrics = scorer(extracted_answers, gt_answers)
+
+    # Add average compression ratio
+    avg_compression = sum([obj["compression_ratio"] for obj in save_obj]) / len(save_obj)
+    metrics["avg_compression"] = avg_compression
+    metrics["num_samples"] = len(save_obj)
+    metrics["dataset"] = dataset
+    metrics["data_split"] = data_split
+    metrics["data_dir"] = data_dir
+    metrics["model_name"] = model_name
+    metrics["press_name"] = press_name
+    metrics["cache_budget"] = cache_budget
+    metrics["fraction"] = fraction
+    metrics["num_samples"] = num_samples
+    metrics["max_new_tokens"] = max_new_tokens
+    metrics["max_context_length"] = max_context_length
+    metrics["random_seed"] = random_seed
+
     with open(str(score_filename), "w") as f:
         json.dump(metrics, f)
     print(metrics)
