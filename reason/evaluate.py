@@ -14,6 +14,7 @@ from fire import Fire
 
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
+from kvpress import BasePress, KeyRerotationPress, PerLayerCompressionPress
 
 from utils import default_extractor
 from gsm8k import gsm8k_formatter, gsm8k_scorer
@@ -160,7 +161,7 @@ def evaluate(
         "__".join([dataset, data_dir if data_dir else "", model_name.replace("/", "--"), press_name, f"budget{cache_budget}", f"max_new_tokens{max_new_tokens}"])
         + ".jsonl"
     )
-    assert (fraction) < 1.0 != (num_samples > 0), "Either fraction or num_samples should be set, not both"
+    assert not (fraction < 1.0 and num_samples > 0), "Either fraction or num_samples should be set, not both"
     if num_samples > 0:
         save_filename = save_filename.with_name(save_filename.stem + f"__num_samples{num_samples}" + save_filename.suffix)
     elif fraction < 1.0:
