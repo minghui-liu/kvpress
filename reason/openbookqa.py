@@ -1,8 +1,7 @@
 import re
 from utils import extract_full_boxed_content, is_number
 
-openbookqa_prompt = "Given a piece of fact and a question, pick the correct answer choice."
-openbookqa_answer_prefix = "Solve the problem step by step. Answer with the answer choice label and wrap your final answer in \"\\boxed{}\"."
+openbookqa_prompt = "Solve the problem step by step. Answer with the answer choice label and wrap your final answer in \"\\boxed{}\"."
 
 
 def openbookqa_formatter(example):
@@ -13,7 +12,7 @@ def openbookqa_formatter(example):
     choice_labels = example['choices']['label']
     choices_text = "\n".join([f"{label}. {text}" for label, text in zip(choice_labels, choice_texts)])
 
-    input_text = f"{openbookqa_prompt}\nFact:\n{example['fact1']}\nQuestion:\n{example['question_stem']}\nChoices:\n{choices_text}\n{openbookqa_answer_prefix}"
+    input_text = f"Question:\n{example['question_stem']}\nChoices:\n{choices_text}\n{openbookqa_prompt}"
     # parse four # signs and the following text as the answer
     answer_text = example["answerKey"]
 
