@@ -240,8 +240,8 @@ def evaluate(
 
             # calculate the compression ratio
             input_token_count = inputs["input_ids"].shape[1]
-            output_token_count = outputs[0].shape[1] - input_token_count
-            total_token_count = outputs[0].shape[1]
+            output_token_count = outputs[0].shape[0] - input_token_count
+            total_token_count = outputs[0].shape[0]
             if total_token_count <= cache_budget:
                 actual_compression = 1.0
             else:
