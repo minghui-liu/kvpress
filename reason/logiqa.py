@@ -12,8 +12,7 @@ def logiqa_formatter(example):
     options_text = "\n".join([f"{i + 1}. {option}" for i, option in enumerate(example["options"])])
 
     input_text = f"{logiqa_prompt}\nContext:\n{example['context']}\nQuery:\n{example['query']}\nOptions:\n{options_text}\n{logiqa_answer_prefix}"
-    # parse four # signs and the following text as the answer
-    answer_text = str(example["correct_option"])
+    answer_text = str(example["correct_option"] + 1)  # Convert to 1-based index
 
     return input_text, answer_text
 
