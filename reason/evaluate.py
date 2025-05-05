@@ -171,6 +171,8 @@ def evaluate(
         save_filename = save_filename.with_name(save_filename.stem + f"__fraction{fraction:.2f}" + save_filename.suffix)
     if max_context_length is not None:
         save_filename = save_filename.with_name(save_filename.stem + f"__max_context{max_context_length}" + save_filename.suffix)
+    if do_sampling:
+        save_filename = save_filename.with_name(save_filename.stem + "__sampling" + save_filename.suffix)
     score_filename = save_dir / (save_filename.stem + "_score.json")
 
     if save_filename.exists():
