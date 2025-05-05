@@ -9,15 +9,13 @@ from pathlib import Path
 from typing import Optional
 
 from kvpress.presses.base_press import BasePress
-from kvpress.presses.key_rerotation_press import KeyRerotationPress
-from kvpress.presses.per_layer_compression_press import PerLayerCompressionPress
 from kvpress.presses.h2o_press import H2OPress
 import torch
 from datasets import load_dataset
 from fire import Fire
 
 from tqdm import tqdm
-from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from utils import default_extractor
 from gsm8k import gsm8k_formatter, gsm8k_scorer

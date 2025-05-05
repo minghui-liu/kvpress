@@ -26,6 +26,8 @@ from kvpress.presses.tova_press import TOVAPress
 from kvpress.presses.qfilter_press import QFilterPress
 from kvpress.presses.pyramidkv_press import PyramidKVPress
 from kvpress.presses.finch_press import FinchPress
+from kvpress.presses.h2o_press import H2OPress
+from kvpress.presses.full_press import FullPress
 
 # Patch the attention functions to support head-wise compression
 patch_attention_functions()
@@ -55,4 +57,6 @@ __all__ = [
     "QFilterPress",
     "PyramidKVPress",
     "FinchPress",
+    "H2OPress",
+    "FullPress",
 ]
