@@ -44,7 +44,7 @@ DATASET_DICT = {
     "logiqa": ("lucasmccabe/logiqa", None, "test"),
     "openbookqa": ("allenai/openbookqa", "main", "test"),
     "aime25": ("math-ai/aime25", None, "test"),
-    "commonsenseqa": ("tau/commonsense_qa", None, "test"),
+    "commonsenseqa": ("tau/commonsense_qa", None, "validation"),
     "math500": ("HuggingFaceH4/MATH-500", None, "test"),
 }
 
