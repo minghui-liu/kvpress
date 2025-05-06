@@ -1,5 +1,3 @@
-import re
-from utils import extract_full_boxed_content, is_number
 
 aime25_prompt = "\nSolve the problem step by step. Wrap your final answer in \"\\boxed{}\"."
 

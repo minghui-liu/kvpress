@@ -23,7 +23,7 @@ from strategyqa import strategyqa_formatter, strategyqa_extractor, strategyqa_sc
 from logiqa import logiqa_formatter, logiqa_scorer
 from openbookqa import openbookqa_formatter, openbookqa_scorer
 from aime25 import aime25_formatter, aime25_scorer
-from commonsenseqa import commonsenseqa_formatter, commonsenseqa_extractor, commonsenseqa_scorer
+from commonsenseqa import commonsenseqa_formatter, commonsenseqa_scorer
 from math500 import math500_formatter, math500_scorer
 from drop import drop_formatter, drop_scorer
 
@@ -70,7 +70,7 @@ EXTRACTOR_DICT = {
     "logiqa": default_extractor,
     "openbookqa": default_extractor,
     "aime25": default_extractor,
-    "commonsenseqa": commonsenseqa_extractor,
+    "commonsenseqa": default_extractor,
     "math500": default_extractor,
     "drop": default_extractor,
 }

@@ -1,5 +1,3 @@
-import re
-from utils import extract_full_boxed_content, is_number
 
 logiqa_prompt = "Given a context, a query and some options, pick the correct option."
 logiqa_answer_prefix = "Solve the problem step by step. Answer with the option number and wrap your final answer in \"\\boxed{{}}\"."
