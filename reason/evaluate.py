@@ -26,6 +26,7 @@ from aime25 import aime25_formatter, aime25_scorer
 from commonsenseqa import commonsenseqa_formatter, commonsenseqa_scorer
 from math500 import math500_formatter, math500_scorer
 from drop import drop_formatter, drop_scorer
+from reclor import reclor_formatter, reclor_scorer
 
 from kvpress import (
     KnormPress,
@@ -61,6 +62,7 @@ FORMATTER_DICT = {
     "commonsenseqa": commonsenseqa_formatter,
     "math500": math500_formatter,
     "drop": drop_formatter,
+    "reclor": reclor_formatter,
 }
 
 EXTRACTOR_DICT = {
@@ -73,6 +75,7 @@ EXTRACTOR_DICT = {
     "commonsenseqa": default_extractor,
     "math500": default_extractor,
     "drop": default_extractor,
+    "reclor": default_extractor,
 }
 
 SCORER_DICT = {
@@ -85,6 +88,7 @@ SCORER_DICT = {
     "commonsenseqa": commonsenseqa_scorer,
     "math500": math500_scorer,
     "drop": drop_scorer,
+    "reclor": reclor_scorer,
 }
 
 PRESS_DICT = {
