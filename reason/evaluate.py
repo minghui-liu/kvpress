@@ -21,10 +21,11 @@ from gsm8k import gsm8k_formatter, gsm8k_scorer
 from folio import folio_formatter, folio_extractor, folio_scorer
 from strategyqa import strategyqa_formatter, strategyqa_extractor, strategyqa_scorer
 from logiqa import logiqa_formatter, logiqa_scorer
-from openbookqa import openbookqa_formatter, openbookqa_extractor, openbookqa_scorer
+from openbookqa import openbookqa_formatter, openbookqa_scorer
 from aime25 import aime25_formatter, aime25_scorer
 from commonsenseqa import commonsenseqa_formatter, commonsenseqa_extractor, commonsenseqa_scorer
 from math500 import math500_formatter, math500_scorer
+from drop import drop_formatter, drop_scorer
 
 from kvpress import (
     KnormPress,
@@ -46,6 +47,8 @@ DATASET_DICT = {
     "aime25": ("math-ai/aime25", None, "test"),
     "commonsenseqa": ("tau/commonsense_qa", None, "validation"),
     "math500": ("HuggingFaceH4/MATH-500", None, "test"),
+    "drop": ("ucinlp/drop", None, "validation"),
+    "reclor": ("hadithya369/ReClor", None, "validation"),
 }
 
 FORMATTER_DICT = {
@@ -57,6 +60,7 @@ FORMATTER_DICT = {
     "aime25": aime25_formatter,
     "commonsenseqa": commonsenseqa_formatter,
     "math500": math500_formatter,
+    "drop": drop_formatter,
 }
 
 EXTRACTOR_DICT = {
@@ -64,10 +68,11 @@ EXTRACTOR_DICT = {
     "folio": folio_extractor,
     "strategyqa": strategyqa_extractor,
     "logiqa": default_extractor,
-    "openbookqa": openbookqa_extractor,
+    "openbookqa": default_extractor,
     "aime25": default_extractor,
     "commonsenseqa": commonsenseqa_extractor,
     "math500": default_extractor,
+    "drop": default_extractor,
 }
 
 SCORER_DICT = {
@@ -79,6 +84,7 @@ SCORER_DICT = {
     "aime25": aime25_scorer,
     "commonsenseqa": commonsenseqa_scorer,
     "math500": math500_scorer,
+    "drop": drop_scorer,
 }
 
 PRESS_DICT = {
