@@ -52,6 +52,10 @@ def default_extractor(response):
     if is_number(response):
         return response.strip()
     
+    # check if the response is a single letter
+    if response.isalpha():
+        return response.strip()
+    
     # CoT strategy
     if 'boxed{' in response:
         try:
