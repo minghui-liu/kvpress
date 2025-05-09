@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 # (dataset_name, subset, split)
 DATASET_DICT = {
     "gsm8k": ("openai/gsm8k", "main", "test"),
-    "folio": ("yale-nlp/folio", None, "test"),
+    "folio": ("yale-nlp/folio", None, "validation"),
     "strategyqa": ("ChilleD/StrategyQA", None, "test"),
     "logiqa": ("lucasmccabe/logiqa", None, "test"),
     "openbookqa": ("allenai/openbookqa", "main", "test"),
@@ -117,11 +117,11 @@ def evaluate(
     # model_name: str = "nvidia/Llama-3.1-Nemotron-Nano-8B-v1",
     device: Optional[str] = None,
     press_name: str = "knorm",
-    cache_budget: int = 4096,
+    cache_budget: int = 512,
     fraction: float = 1.0,
     num_samples: int = 0,
     random_seed: int = 42,
-    max_new_tokens: Optional[int] = 1024,
+    max_new_tokens: Optional[int] = 2048,
     max_context_length: Optional[int] = None,
     do_sampling: bool = True,
     compression_ratio: float = 0.1,
