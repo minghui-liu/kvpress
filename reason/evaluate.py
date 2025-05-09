@@ -124,6 +124,7 @@ def evaluate(
     max_new_tokens: Optional[int] = 2048,
     max_context_length: Optional[int] = None,
     do_sampling: bool = True,
+    skip_existing: bool = True,
     compression_ratio: float = 0.1,
     key_channel_compression_ratio: float = 0.5,
 ):
@@ -144,16 +145,24 @@ def evaluate(
         Model device, by default cuda:0 if available else cpu. For multi-GPU use "auto"
     press_name : str, optional
         Press to use (see PRESS_DICT), by default "expected_attention"
+    cache_budget : int, optional
+        Cache budget for the press, by default 512
     compression_ratio : float, optional
         Compression ratio for the press, by default 0.1
     max_new_tokens : int, optional
         Maximum number of new tokens to generate, by default use the default for the task (recommended)
     fraction : float, optional
         Fraction of the dataset to evaluate, by default 1.0
+    num_samples : int, optional
+        Number of samples to evaluate, by default 0
+    random_seed : int, optional
+        Random seed for reproducibility, by default 42
     max_context_length : int, optional
         Maximum number of tokens to use in the context. By default will use the maximum length supported by the model.
-    compress_questions : bool, optional
-        Whether to compress the questions as well, by default False
+    do_sampleing : bool, optional
+        Whether to use sampling or not, by default True
+    skip_existing : bool, optional
+        Whether to skip existing files, by default True
     key_channel_compression_ratio : float, optional
         key Channel Compression ratio for the channel press, by default 0.5
     """
@@ -185,9 +194,13 @@ def evaluate(
         save_filename = save_filename.with_name(save_filename.stem + "__sampling" + save_filename.suffix)
     score_filename = save_dir / (save_filename.stem + "_score.json")
 
-    if save_filename.exists():
-        logger.warning(f"Results already exist at {save_filename}")
-        print(f"Results already exist. Loading results from {save_filename}")
+    if skip_existing and score_filename.exists():
+        logger.warning(f"Score file already exists at {score_filename}, skipping evaluation")
+        return
+
+    if skip_existing and save_filename.exists():
+        logger.warning(f"Model responses already exist at {save_filename}")
+        print(f"Model responses already exist. Loading responses from {save_filename} and evaluating metrics")
     else:
         # Load dataset
         ds = load_dataset(hf_name, data_dir=data_dir, split=data_split)
