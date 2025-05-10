@@ -21,6 +21,7 @@ class KnormPress(ScorerPress):
         keys: torch.Tensor,
         values: torch.Tensor,
         attentions: torch.Tensor,
+        is_prefill: bool,
         kwargs,
     ) -> torch.Tensor:
         return -keys.norm(dim=-1)
