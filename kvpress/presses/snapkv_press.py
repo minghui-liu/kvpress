@@ -70,6 +70,7 @@ class SnapKVPress(ScorerPress):
         keys: torch.Tensor,
         values: torch.Tensor,
         attentions: torch.Tensor,
+        is_prefill: bool,
         kwargs,
     ) -> torch.Tensor:
 

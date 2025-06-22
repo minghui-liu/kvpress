@@ -33,6 +33,7 @@ from kvpress import (
     RandomPress,
     StreamingLLMPress,
     FullPress,
+    RKVPress,
     H2OPress,
 )
 
@@ -49,7 +50,7 @@ DATASET_DICT = {
     "commonsenseqa": ("tau/commonsense_qa", None, "validation"),
     "math500": ("HuggingFaceH4/MATH-500", None, "test"),
     "drop": ("ucinlp/drop", None, "validation"),
-    "reclor": ("hadithya369/ReClor", None, "validation"),
+    "reclor": ("metaeval/reclor", None, "validation"),
 }
 
 FORMATTER_DICT = {
@@ -96,6 +97,7 @@ PRESS_DICT = {
     "h2o": H2OPress(),
     "random": RandomPress(),
     "streaming_llm": StreamingLLMPress(),
+    "rkv": RKVPress(),
     "full": FullPress(),
 }
 
