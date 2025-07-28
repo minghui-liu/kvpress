@@ -111,43 +111,43 @@ class RKVPress(ScorerPress):
 
         ### Original Algorithm: directly using the cosine similarity
         # # compute the cosine similarity between keys
-        # keys_flat = keys.view(bsz, num_key_value_heads, -1, keys.shape[-1])
-        # keys_flat = keys_flat[:, :, : -self.window_size, :]  # Exclude the last window_size keys
-        # keys_similarity = torch.einsum("bhqd,bhkd->bhqk", keys_flat, keys_flat)
-        # # zero out the diagonal (self-similarity)
-        # mask = torch.eye(keys_similarity.shape[-1], device=keys_similarity.device).unsqueeze(0).unsqueeze(0)
-        # keys_similarity = keys_similarity * (1 - mask)
+        keys_flat = keys.view(bsz, num_key_value_heads, -1, keys.shape[-1])
+        keys_flat = keys_flat[:, :, : -self.window_size, :]  # Exclude the last window_size keys
+        keys_similarity = torch.einsum("bhqd,bhkd->bhqk", keys_flat, keys_flat)
+        # zero out the diagonal (self-similarity)
+        mask = torch.eye(keys_similarity.shape[-1], device=keys_similarity.device).unsqueeze(0).unsqueeze(0)
+        keys_similarity = keys_similarity * (1 - mask)
 
-        # redundency = keys_similarity.mean(dim=-1)  # Average over the key dimension
-        # redundency = F.softmax(redundency, dim=-1, dtype=torch.float32).to(scores.dtype)
+        redundency = keys_similarity.mean(dim=-1)  # Average over the key dimension
+        redundency = F.softmax(redundency, dim=-1, dtype=torch.float32).to(scores.dtype)
  
 
         ### Modified Algorithm: implement LSH over that
-        keys_flat = keys.view(bsz, num_key_value_heads, -1, keys.shape[-1])
-        keys_flat = keys_flat[:, :, : -self.window_size, :]  # Exclude the last window_size keys
+        # keys_flat = keys.view(bsz, num_key_value_heads, -1, keys.shape[-1])
+        # keys_flat = keys_flat[:, :, : -self.window_size, :]  # Exclude the last window_size keys
 
-        # Construct LSH buckets
-        n_hash_buckets=16
-        proj_matrix = torch.randn(num_key_value_heads, n_hash_buckets, keys_flat.shape[-1] device=keys.device)
-        # Dixi: I use random projection here has hash function for easiest implementation
-        hash_bits = torch.einsum("bhqd,hbd->bhqb", keys_flat, proj_matrix)
-        hash_codes = (hash_bits > 0).int()
-        powers_of_two = 2 ** torch.arange(n_hash_bits, device=device)
-        hash_codes= torch.sum(hash_codes * powers_of_two, dim=-1) 
+        # # Construct LSH buckets
+        # n_hash_buckets=16
+        # proj_matrix = torch.randn(num_key_value_heads, n_hash_buckets, keys_flat.shape[-1] device=keys.device)
+        # # Dixi: I use random projection here has hash function for easiest implementation
+        # hash_bits = torch.einsum("bhqd,hbd->bhqb", keys_flat, proj_matrix)
+        # hash_codes = (hash_bits > 0).int()
+        # powers_of_two = 2 ** torch.arange(n_hash_bits, device=device)
+        # hash_codes= torch.sum(hash_codes * powers_of_two, dim=-1) 
 
-        redundency = []
-        for i in range(num_key_value_heads):
-            counts = []
-            for b in range(bsz):
-                hashes = hash_codes_int[b, i]  # [seq_len]
-                uniq, count = torch.unique(hashes, return_counts=True)
-                count_map = dict(zip(uniq.tolist(), count.tolist()))
-                counts_b = torch.tensor([count_map[h.item()] for h in hashes], device=hashes.device)
-                counts.append(counts_b)
-            counts = torch.stack(counts)  # shape: [bsz, seq_len]
-            redundency.append(counts)
-        redundency = torch.stack(redundency, dim=1)  # reduendency score means how many vector falls into the same bucket
-        redundency = F.softmax(redundency, dim=-1, dtype=torch.float32).to(scores.dtype)
+        # redundency = []
+        # for i in range(num_key_value_heads):
+        #     counts = []
+        #     for b in range(bsz):
+        #         hashes = hash_codes_int[b, i]  # [seq_len]
+        #         uniq, count = torch.unique(hashes, return_counts=True)
+        #         count_map = dict(zip(uniq.tolist(), count.tolist()))
+        #         counts_b = torch.tensor([count_map[h.item()] for h in hashes], device=hashes.device)
+        #         counts.append(counts_b)
+        #     counts = torch.stack(counts)  # shape: [bsz, seq_len]
+        #     redundency.append(counts)
+        # redundency = torch.stack(redundency, dim=1)  # reduendency score means how many vector falls into the same bucket
+        # redundency = F.softmax(redundency, dim=-1, dtype=torch.float32).to(scores.dtype)
 
         lam = 0.1
         scores = lam * scores + (1 - lam) * redundency
