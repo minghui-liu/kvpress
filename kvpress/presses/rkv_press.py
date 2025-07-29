@@ -96,11 +96,15 @@ class RKVPress(ScorerPress):
         print("attn weigts:",attn_weights)
         scores = attn_weights.mean(dim=-2)   
         # Average per group (https://github.com/FasterDecoding/SnapKV/issues/22)
+        print("score",scores)
         scores = scores.view(bsz, num_key_value_heads, num_key_value_groups, q_len - self.window_size)
+        print("scores after view",scores)
         scores = scores.max(dim=-2).values
+        print("scores before max pool",scores)
         # Stablization and Importance Estimation
         scores = F.max_pool1d(scores, kernel_size=self.kernel_size, padding=self.kernel_size // 2, stride=1)
         # Redundancy Estimation via Semantic Similarity
+        print("scores after max pool",scores)
         
         # normalize keys by dividing the l2 norm of keys + eps (1e-8) 
         eps = 1e-8
