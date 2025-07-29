@@ -132,7 +132,7 @@ class RKVPress(ScorerPress):
         # Dixi: I use random projection here has hash function for easiest implementation
         hash_bits = torch.einsum("bhqd,dk->bhqk", keys_flat, proj_matrix)
         hash_codes = (hash_bits > 0).int()
-        powers_of_two = 2 ** torch.arange(n_hash_bits, device=device)
+        powers_of_two = 2 ** torch.arange(n_hash_buckets, device=device)
         hash_codes_int = torch.sum(hash_codes * powers_of_two, dim=-1)  # [B, H, Q]
 
         redundency = torch.zeros_like(hash_codes_int, dtype=torch.float32)  # [B, H, Q]
