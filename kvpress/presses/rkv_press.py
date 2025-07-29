@@ -182,6 +182,7 @@ class RKVPress(ScorerPress):
         print("indices", indices)
         indices = indices.unsqueeze(-1).expand(-1, -1, -1, module.head_dim)
 
+        print(keys.shape, values.shape)
         # Prune keys and values
         keys = keys.gather(2, indices).contiguous()
         values = values.gather(2, indices).contiguous()
