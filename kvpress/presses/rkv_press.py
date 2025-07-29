@@ -100,7 +100,6 @@ class RKVPress(ScorerPress):
         # Stablization and Importance Estimation
         scores = F.max_pool1d(scores, kernel_size=self.kernel_size, padding=self.kernel_size // 2, stride=1)
         # Redundancy Estimation via Semantic Similarity
-        print("scores after max pool",scores)
         
         # normalize keys by dividing the l2 norm of keys + eps (1e-8) 
         eps = 1e-8
@@ -148,10 +147,8 @@ class RKVPress(ScorerPress):
 
         lam = 0.1
         scores = lam * scores + (1 - lam) * redundency
-        print("scores before padding",scores)
         # Add back the observation window. Use max score to make sure the window is not pruned.
         scores = F.pad(scores, (0, self.window_size), value=scores.max().item())
-        print("scores after padding", scores)
         return scores
     
 
