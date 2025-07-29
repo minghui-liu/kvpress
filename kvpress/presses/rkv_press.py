@@ -187,7 +187,9 @@ class RKVPress(ScorerPress):
         # Prune keys and values
         keys = keys.gather(2, indices).contiguous()
         values = values.gather(2, indices).contiguous()
-
+        print("can get to here with keys and values")
+        print(keys)
+        print(values)
         self.accumulated_tokens = 0  # Reset after compression
         self.acc_hidden_states = torch.zeros(
             (1, self.compress_interval, 4096), dtype=torch.bfloat16, device="cuda"
