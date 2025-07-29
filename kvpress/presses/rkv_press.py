@@ -86,13 +86,14 @@ class RKVPress(ScorerPress):
         num_key_value_groups = module.config.num_attention_heads // num_key_value_heads
 
         assert q_len > self.window_size, "Query length should be greater than the window size"
-
+        print("Can get to here")
         if attentions is not None:
             attn_weights = attentions[..., -self.window_size :, : -self.window_size]
         else:
             attn_weights = self.compute_window_attention(
                 module, hidden_states, keys, self.window_size, kwargs["position_embeddings"]
             )
+        print("attn_weights", attn_weights, attn_weights.shape)
         scores = attn_weights.mean(dim=-2)   
         # Average per group (https://github.com/FasterDecoding/SnapKV/issues/22)
         scores = scores.view(bsz, num_key_value_heads, num_key_value_groups, q_len - self.window_size)
