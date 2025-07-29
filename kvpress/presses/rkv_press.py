@@ -83,73 +83,72 @@ class RKVPress(ScorerPress):
     ) -> torch.Tensor:
 
         bsz, num_key_value_heads, q_len, _ = keys.shape
-        scores=torch.zeros((bsz, num_key_value_heads, q_len), dtype=torch.float32, device=keys.device)
-        # num_key_value_groups = module.config.num_attention_heads // num_key_value_heads
+        num_key_value_groups = module.config.num_attention_heads // num_key_value_heads
 
-        # assert q_len > self.window_size, "Query length should be greater than the window size"
+        assert q_len > self.window_size, "Query length should be greater than the window size"
 
-        # if attentions is not None:
-        #     attn_weights = attentions[..., -self.window_size :, : -self.window_size]
-        # else:
-        #     attn_weights = self.compute_window_attention(
-        #         module, hidden_states, keys, self.window_size, kwargs["position_embeddings"]
-        #     )
-        # scores = attn_weights.mean(dim=-2)   
-        # # Average per group (https://github.com/FasterDecoding/SnapKV/issues/22)
-        # scores = scores.view(bsz, num_key_value_heads, num_key_value_groups, q_len - self.window_size)
-        # scores = scores.max(dim=-2).values
-        # # Stablization and Importance Estimation
-        # scores = F.max_pool1d(scores, kernel_size=self.kernel_size, padding=self.kernel_size // 2, stride=1)
+        if attentions is not None:
+            attn_weights = attentions[..., -self.window_size :, : -self.window_size]
+        else:
+            attn_weights = self.compute_window_attention(
+                module, hidden_states, keys, self.window_size, kwargs["position_embeddings"]
+            )
+        scores = attn_weights.mean(dim=-2)   
+        # Average per group (https://github.com/FasterDecoding/SnapKV/issues/22)
+        scores = scores.view(bsz, num_key_value_heads, num_key_value_groups, q_len - self.window_size)
+        scores = scores.max(dim=-2).values
+        # Stablization and Importance Estimation
+        scores = F.max_pool1d(scores, kernel_size=self.kernel_size, padding=self.kernel_size // 2, stride=1)
         # Redundancy Estimation via Semantic Similarity
         
-        # # normalize keys by dividing the l2 norm of keys + eps (1e-8) 
-        # eps = 1e-8
-        # keys_norm = keys.norm(dim=-1, keepdim=True) + eps
-        # keys_norm = torch.clamp(keys.norm(dim=-1, keepdim=True), min=1e-6)
-        # keys = keys / keys_norm
+        # normalize keys by dividing the l2 norm of keys + eps (1e-8) 
+        eps = 1e-8
+        keys_norm = keys.norm(dim=-1, keepdim=True) + eps
+        keys_norm = torch.clamp(keys.norm(dim=-1, keepdim=True), min=1e-6)
+        keys = keys / keys_norm
 
-        # ### Original Algorithm: directly using the cosine similarity
-        # # # compute the cosine similarity between keys
-        # # keys_flat = keys.view(bsz, num_key_value_heads, -1, keys.shape[-1])
-        # # keys_flat = keys_flat[:, :, : -self.window_size, :]  # Exclude the last window_size keys
-        # # keys_similarity = torch.einsum("bhqd,bhkd->bhqk", keys_flat, keys_flat)
-        # # # zero out the diagonal (self-similarity)
-        # # mask = torch.eye(keys_similarity.shape[-1], device=keys_similarity.device).unsqueeze(0).unsqueeze(0)
-        # # keys_similarity = keys_similarity * (1 - mask)
-
-        # # redundency = keys_similarity.mean(dim=-1)  # Average over the key dimension
-        # # redundency = F.softmax(redundency, dim=-1, dtype=torch.float32).to(scores.dtype)
- 
-
-        # ### Modified Algorithm: implement LSH over that
+        ### Original Algorithm: directly using the cosine similarity
+        # # compute the cosine similarity between keys
         # keys_flat = keys.view(bsz, num_key_value_heads, -1, keys.shape[-1])
         # keys_flat = keys_flat[:, :, : -self.window_size, :]  # Exclude the last window_size keys
+        # keys_similarity = torch.einsum("bhqd,bhkd->bhqk", keys_flat, keys_flat)
+        # # zero out the diagonal (self-similarity)
+        # mask = torch.eye(keys_similarity.shape[-1], device=keys_similarity.device).unsqueeze(0).unsqueeze(0)
+        # keys_similarity = keys_similarity * (1 - mask)
 
-        # # Construct LSH buckets
-        # n_hash_buckets=16
-        # proj_matrix = torch.randn(keys_flat.shape[-1],n_hash_buckets, device=keys.device).to(keys_flat.dtype)  # Random projection matrix
-        # # Dixi: I use random projection here has hash function for easiest implementation
-        # hash_bits = torch.einsum("bhqd,dk->bhqk", keys_flat, proj_matrix)
-        # hash_codes = (hash_bits > 0).int()
-        # powers_of_two = 2 ** torch.arange(n_hash_buckets, device=keys.device, dtype=torch.float32)
-        # hash_codes_int = torch.sum(hash_codes * powers_of_two, dim=-1)  # [B, H, Q]
-
-        # redundency = torch.zeros_like(hash_codes_int, dtype=torch.float32)  # [B, H, Q]
-        # for b in range(bsz):
-        #     for h in range(num_key_value_heads):
-        #         codes = hash_codes_int[b, h]  # [Q]
-        #         unique, counts = torch.unique(codes, return_counts=True)
-        #         count_dict = dict(zip(unique.tolist(), counts.tolist()))
-        #         redundency[b, h] = torch.tensor([count_dict[c.item()] for c in codes], device=keys.device)
-        
-        # redundency = torch.clamp(redundency, min=1.0)  # ensure no zero or negative
+        # redundency = keys_similarity.mean(dim=-1)  # Average over the key dimension
         # redundency = F.softmax(redundency, dim=-1, dtype=torch.float32).to(scores.dtype)
+ 
+
+        ### Modified Algorithm: implement LSH over that
+        keys_flat = keys.view(bsz, num_key_value_heads, -1, keys.shape[-1])
+        keys_flat = keys_flat[:, :, : -self.window_size, :]  # Exclude the last window_size keys
+
+        # Construct LSH buckets
+        n_hash_buckets=16
+        proj_matrix = torch.randn(keys_flat.shape[-1],n_hash_buckets, device=keys.device).to(keys_flat.dtype)  # Random projection matrix
+        # Dixi: I use random projection here has hash function for easiest implementation
+        hash_bits = torch.einsum("bhqd,dk->bhqk", keys_flat, proj_matrix)
+        hash_codes = (hash_bits > 0).int()
+        powers_of_two = 2 ** torch.arange(n_hash_buckets, device=keys.device, dtype=torch.float32)
+        hash_codes_int = torch.sum(hash_codes * powers_of_two, dim=-1)  # [B, H, Q]
+
+        redundency = torch.zeros_like(hash_codes_int, dtype=torch.float32)  # [B, H, Q]
+        for b in range(bsz):
+            for h in range(num_key_value_heads):
+                codes = hash_codes_int[b, h]  # [Q]
+                unique, counts = torch.unique(codes, return_counts=True)
+                count_dict = dict(zip(unique.tolist(), counts.tolist()))
+                redundency[b, h] = torch.tensor([count_dict[c.item()] for c in codes], device=keys.device)
+        
+        redundency = torch.clamp(redundency, min=1.0)  # ensure no zero or negative
+        redundency = F.softmax(redundency, dim=-1, dtype=torch.float32).to(scores.dtype)
 
 
-        # lam = 0.1
-        # scores = lam * scores + (1 - lam) * redundency
+        lam = 0.1
+        scores = lam * scores + (1 - lam) * redundency
         # Add back the observation window. Use max score to make sure the window is not pruned.
-        # scores = F.pad(scores, (0, self.window_size), value=scores.max().item())
+        scores = F.pad(scores, (0, self.window_size), value=scores.max().item())
         return scores
     
 
