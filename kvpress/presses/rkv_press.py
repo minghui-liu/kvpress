@@ -178,7 +178,9 @@ class RKVPress(ScorerPress):
         # scores = self.score(module, hidden_states, keys, values, attentions, False, kwargs)
         scores = self.score(module, self.acc_hidden_states[:, -self.window_size:, :], keys, values, attentions, False, kwargs)
         # Get indices of KV pairs with the lowest scores
+        print("scores",scores)
         indices = scores.topk(self.cache_budget, dim=-1).indices
+        print("indices", indices)
         indices = indices.unsqueeze(-1).expand(-1, -1, -1, module.head_dim)
 
         # Prune keys and values

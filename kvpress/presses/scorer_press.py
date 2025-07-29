@@ -64,9 +64,7 @@ class ScorerPress(BasePress):
         # Compute scores
         scores = self.score(module, hidden_states, keys, values, attentions, True, kwargs)
         # Get indices of KV pairs with the lowest scores
-        print("scores: ", scores)
         indices = scores.topk(self.cache_budget, dim=-1).indices
-        print("indices: ", indices)
         indices = indices.unsqueeze(-1).expand(-1, -1, -1, module.head_dim)
 
         # Prune keys and values
