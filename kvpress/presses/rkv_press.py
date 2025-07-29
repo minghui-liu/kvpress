@@ -144,7 +144,6 @@ class RKVPress(ScorerPress):
         redundency = torch.clamp(redundency, min=1.0)  # ensure no zero or negative
         redundency = F.softmax(redundency, dim=-1, dtype=torch.float32).to(scores.dtype)
 
-
         lam = 0.1
         scores = lam * scores + (1 - lam) * redundency
         # Add back the observation window. Use max score to make sure the window is not pruned.
@@ -178,7 +177,7 @@ class RKVPress(ScorerPress):
         # scores = self.score(module, hidden_states, keys, values, attentions, False, kwargs)
         scores = self.score(module, self.acc_hidden_states[:, -self.window_size:, :], keys, values, attentions, False, kwargs)
         # Get indices of KV pairs with the lowest scores
-        print("scores",scores)
+        print("scores",scores,scores.shape)
         indices = scores.topk(self.cache_budget, dim=-1).indices
         print("indices", indices)
         indices = indices.unsqueeze(-1).expand(-1, -1, -1, module.head_dim)
