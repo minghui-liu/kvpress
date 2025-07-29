@@ -147,7 +147,7 @@ class RKVPress(ScorerPress):
 
 
         lam = 0.1
-        print("redundency is":,redundency, "\n")
+        print("redundency is",redundency, "\n")
         scores = lam * scores + (1 - lam) * redundency
 
         # Add back the observation window. Use max score to make sure the window is not pruned.
