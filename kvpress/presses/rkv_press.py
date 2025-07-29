@@ -83,22 +83,23 @@ class RKVPress(ScorerPress):
     ) -> torch.Tensor:
 
         bsz, num_key_value_heads, q_len, _ = keys.shape
-        num_key_value_groups = module.config.num_attention_heads // num_key_value_heads
+        scores=torch.zeros((bsz, num_key_value_heads, q_len), dtype=torch.float32, device=keys.device)
+        # num_key_value_groups = module.config.num_attention_heads // num_key_value_heads
 
-        assert q_len > self.window_size, "Query length should be greater than the window size"
+        # assert q_len > self.window_size, "Query length should be greater than the window size"
 
-        if attentions is not None:
-            attn_weights = attentions[..., -self.window_size :, : -self.window_size]
-        else:
-            attn_weights = self.compute_window_attention(
-                module, hidden_states, keys, self.window_size, kwargs["position_embeddings"]
-            )
-        scores = attn_weights.mean(dim=-2)   
-        # Average per group (https://github.com/FasterDecoding/SnapKV/issues/22)
-        scores = scores.view(bsz, num_key_value_heads, num_key_value_groups, q_len - self.window_size)
-        scores = scores.max(dim=-2).values
-        # Stablization and Importance Estimation
-        scores = F.max_pool1d(scores, kernel_size=self.kernel_size, padding=self.kernel_size // 2, stride=1)
+        # if attentions is not None:
+        #     attn_weights = attentions[..., -self.window_size :, : -self.window_size]
+        # else:
+        #     attn_weights = self.compute_window_attention(
+        #         module, hidden_states, keys, self.window_size, kwargs["position_embeddings"]
+        #     )
+        # scores = attn_weights.mean(dim=-2)   
+        # # Average per group (https://github.com/FasterDecoding/SnapKV/issues/22)
+        # scores = scores.view(bsz, num_key_value_heads, num_key_value_groups, q_len - self.window_size)
+        # scores = scores.max(dim=-2).values
+        # # Stablization and Importance Estimation
+        # scores = F.max_pool1d(scores, kernel_size=self.kernel_size, padding=self.kernel_size // 2, stride=1)
         # Redundancy Estimation via Semantic Similarity
         
         # # normalize keys by dividing the l2 norm of keys + eps (1e-8) 
@@ -148,7 +149,7 @@ class RKVPress(ScorerPress):
         # lam = 0.1
         # scores = lam * scores + (1 - lam) * redundency
         # Add back the observation window. Use max score to make sure the window is not pruned.
-        scores = F.pad(scores, (0, self.window_size), value=scores.max().item())
+        # scores = F.pad(scores, (0, self.window_size), value=scores.max().item())
         return scores
     
 
