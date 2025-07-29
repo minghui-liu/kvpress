@@ -107,6 +107,7 @@ class RKVPress(ScorerPress):
         # normalize keys by dividing the l2 norm of keys + eps (1e-8) 
         eps = 1e-8
         keys_norm = keys.norm(dim=-1, keepdim=True) + eps
+        keys_norm = torch.clamp(keys.norm(dim=-1, keepdim=True), min=1e-6)
         keys = keys / keys_norm
 
         ### Original Algorithm: directly using the cosine similarity
@@ -132,7 +133,7 @@ class RKVPress(ScorerPress):
         # Dixi: I use random projection here has hash function for easiest implementation
         hash_bits = torch.einsum("bhqd,dk->bhqk", keys_flat, proj_matrix)
         hash_codes = (hash_bits > 0).int()
-        powers_of_two = 2 ** torch.arange(n_hash_buckets, device=keys.device)
+        powers_of_two = 2 ** torch.arange(n_hash_buckets, device=keys.device, dtype=torch.float32)
         hash_codes_int = torch.sum(hash_codes * powers_of_two, dim=-1)  # [B, H, Q]
 
         redundency = torch.zeros_like(hash_codes_int, dtype=torch.float32)  # [B, H, Q]
@@ -143,6 +144,7 @@ class RKVPress(ScorerPress):
                 count_dict = dict(zip(unique.tolist(), counts.tolist()))
                 redundency[b, h] = torch.tensor([count_dict[c.item()] for c in codes], device=keys.device)
         
+        redundency = torch.clamp(redundency, min=1.0)  # ensure no zero or negative
         redundency = F.softmax(redundency, dim=-1, dtype=torch.float32).to(scores.dtype)
 
 
