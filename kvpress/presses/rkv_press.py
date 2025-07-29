@@ -142,6 +142,7 @@ class RKVPress(ScorerPress):
                 unique, counts = torch.unique(codes, return_counts=True)
                 count_dict = dict(zip(unique.tolist(), counts.tolist()))
                 redundency[b, h] = torch.tensor([count_dict[c.item()] for c in codes], device=keys.device)
+        print(keys,redundency,scores)
         redundency = F.softmax(redundency, dim=-1, dtype=torch.float32).to(scores.dtype)
 
 
