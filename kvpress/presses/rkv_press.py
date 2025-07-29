@@ -86,14 +86,12 @@ class RKVPress(ScorerPress):
         num_key_value_groups = module.config.num_attention_heads // num_key_value_heads
 
         assert q_len > self.window_size, "Query length should be greater than the window size"
-        print("Can get to here")
         if attentions is not None:
             attn_weights = attentions[..., -self.window_size :, : -self.window_size]
         else:
             attn_weights = self.compute_window_attention(
                 module, hidden_states, keys, self.window_size, kwargs["position_embeddings"]
             )
-        print("attn_weights", attn_weights, attn_weights.shape)
         scores = attn_weights.mean(dim=-2)   
         # Average per group (https://github.com/FasterDecoding/SnapKV/issues/22)
         scores = scores.view(bsz, num_key_value_heads, num_key_value_groups, q_len - self.window_size)
@@ -178,18 +176,13 @@ class RKVPress(ScorerPress):
         # scores = self.score(module, hidden_states, keys, values, attentions, False, kwargs)
         scores = self.score(module, self.acc_hidden_states[:, -self.window_size:, :], keys, values, attentions, False, kwargs)
         # Get indices of KV pairs with the lowest scores
-        print("scores",scores,scores.shape)
         indices = scores.topk(self.cache_budget, dim=-1).indices
-        print("indices", indices)
         indices = indices.unsqueeze(-1).expand(-1, -1, -1, module.head_dim)
 
-        print(keys.shape, values.shape)
         # Prune keys and values
         keys = keys.gather(2, indices).contiguous()
         values = values.gather(2, indices).contiguous()
-        print("can get to here with keys and values")
-        print(keys)
-        print(values)
+
         self.accumulated_tokens = 0  # Reset after compression
         self.acc_hidden_states = torch.zeros(
             (1, self.compress_interval, 4096), dtype=torch.bfloat16, device="cuda"
