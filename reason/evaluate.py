@@ -256,7 +256,6 @@ def evaluate(
             # Run generation
             if do_sampling:
                 with press(model) if press is not None else contextlib.nullcontext():
-                    print(inputs["input_ids"],inputs["attention_mask"])
                     outputs = model.generate(
                         inputs["input_ids"],
                         attention_mask=inputs["attention_mask"],
