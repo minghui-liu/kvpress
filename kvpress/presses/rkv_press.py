@@ -98,10 +98,10 @@ class RKVPress(ScorerPress):
         # Average per group (https://github.com/FasterDecoding/SnapKV/issues/22)
         scores = scores.view(bsz, num_key_value_heads, num_key_value_groups, q_len - self.window_size)
         scores = scores.max(dim=-2).values
-        
+        print("score we get is:", scores, "\n")
         # Stablization and Importance Estimation
         scores = F.max_pool1d(scores, kernel_size=self.kernel_size, padding=self.kernel_size // 2, stride=1)
-
+        print("score after max pooling is:", scores, "\n")
         # Redundancy Estimation via Semantic Similarity
         
         # normalize keys by dividing the l2 norm of keys + eps (1e-8) 
@@ -142,15 +142,17 @@ class RKVPress(ScorerPress):
                 unique, counts = torch.unique(codes, return_counts=True)
                 count_dict = dict(zip(unique.tolist(), counts.tolist()))
                 redundency[b, h] = torch.tensor([count_dict[c.item()] for c in codes], device=keys.device)
-        print(keys,redundency,scores)
+        
         redundency = F.softmax(redundency, dim=-1, dtype=torch.float32).to(scores.dtype)
 
 
         lam = 0.1
+        print("redundency is": redundency, "\n")
         scores = lam * scores + (1 - lam) * redundency
 
         # Add back the observation window. Use max score to make sure the window is not pruned.
         scores = F.pad(scores, (0, self.window_size), value=scores.max().item())
+        print("score after padding is:", scores, "\n")
 
         return scores
     
