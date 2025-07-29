@@ -128,7 +128,7 @@ class RKVPress(ScorerPress):
 
         # Construct LSH buckets
         n_hash_buckets=16
-        proj_matrix = torch.randn(keys_flat.shape[-1],n_hash_buckets, device=keys.device)
+        proj_matrix = torch.randn(keys_flat.shape[-1],n_hash_buckets, device=keys.device).to(keys_flat.dtype)  # Random projection matrix
         # Dixi: I use random projection here has hash function for easiest implementation
         hash_bits = torch.einsum("bhqd,dk->bhqk", keys_flat, proj_matrix)
         hash_codes = (hash_bits > 0).int()
