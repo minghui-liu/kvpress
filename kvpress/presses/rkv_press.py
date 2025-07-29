@@ -128,25 +128,20 @@ class RKVPress(ScorerPress):
 
         # Construct LSH buckets
         n_hash_buckets=16
-        proj_matrix = torch.randn(num_key_value_heads, n_hash_buckets, keys_flat.shape[-1],device=keys.device)
+        proj_matrix = torch.randn(keys_flat.shape[-1],n_hash_buckets, device=keys.device)
         # Dixi: I use random projection here has hash function for easiest implementation
-        hash_bits = torch.einsum("bhqd,hbd->bhqb", keys_flat, proj_matrix)
+        hash_bits = torch.einsum("bhqd,dk->bhqk", keys_flat, proj_matrix)
         hash_codes = (hash_bits > 0).int()
         powers_of_two = 2 ** torch.arange(n_hash_bits, device=device)
-        hash_codes= torch.sum(hash_codes * powers_of_two, dim=-1) 
+        hash_codes_int = torch.sum(hash_codes * powers_of_two, dim=-1)  # [B, H, Q]
 
-        redundency = []
-        for i in range(num_key_value_heads):
-            counts = []
-            for b in range(bsz):
-                hashes = hash_codes_int[b, i]  # [seq_len]
-                uniq, count = torch.unique(hashes, return_counts=True)
-                count_map = dict(zip(uniq.tolist(), count.tolist()))
-                counts_b = torch.tensor([count_map[h.item()] for h in hashes], device=hashes.device)
-                counts.append(counts_b)
-            counts = torch.stack(counts)  # shape: [bsz, seq_len]
-            redundency.append(counts)
-        redundency = torch.stack(redundency, dim=1)  # reduendency score means how many vector falls into the same bucket
+        redundency = torch.zeros_like(hash_codes_int, dtype=torch.float32)  # [B, H, Q]
+        for b in range(bsz):
+            for h in range(num_key_value_heads):
+                codes = hash_codes_int[b, h]  # [Q]
+                unique, counts = torch.unique(codes, return_counts=True)
+                count_dict = dict(zip(unique.tolist(), counts.tolist()))
+                redundency[b, h] = torch.tensor([count_dict[c.item()] for c in codes], device=device)
         redundency = F.softmax(redundency, dim=-1, dtype=torch.float32).to(scores.dtype)
 
 
