@@ -93,15 +93,13 @@ class RKVPress(ScorerPress):
             attn_weights = self.compute_window_attention(
                 module, hidden_states, keys, self.window_size, kwargs["position_embeddings"]
             )
-
+        print("attn weigts:",attn_weights)
         scores = attn_weights.mean(dim=-2)   
         # Average per group (https://github.com/FasterDecoding/SnapKV/issues/22)
         scores = scores.view(bsz, num_key_value_heads, num_key_value_groups, q_len - self.window_size)
         scores = scores.max(dim=-2).values
-        print("score we get is:", scores, "\n")
         # Stablization and Importance Estimation
         scores = F.max_pool1d(scores, kernel_size=self.kernel_size, padding=self.kernel_size // 2, stride=1)
-        print("score after max pooling is:", scores, "\n")
         # Redundancy Estimation via Semantic Similarity
         
         # normalize keys by dividing the l2 norm of keys + eps (1e-8) 
@@ -149,12 +147,10 @@ class RKVPress(ScorerPress):
 
 
         lam = 0.1
-        print("redundency is",redundency, "\n")
         scores = lam * scores + (1 - lam) * redundency
 
         # Add back the observation window. Use max score to make sure the window is not pruned.
         scores = F.pad(scores, (0, self.window_size), value=scores.max().item())
-        print("score after padding is:", scores, "\n")
 
         return scores
     
