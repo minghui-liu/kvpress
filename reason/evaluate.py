@@ -129,6 +129,7 @@ def evaluate(
     skip_existing: bool = True,
     compression_ratio: float = 0.1,
     key_channel_compression_ratio: float = 0.5,
+    n_hash_buckets: int = 6,
 ):
     """
     Evaluate a model on a dataset using a press and save the results
@@ -181,10 +182,16 @@ def evaluate(
 
     save_dir = Path(__file__).parent / "results"
     save_dir.mkdir(exist_ok=True)
-    save_filename = save_dir / (
-        "__".join([dataset, data_dir if data_dir else "", model_name.replace("/", "--"), press_name, f"budget{cache_budget}", f"max_new_tokens{max_new_tokens}"])
-        + ".jsonl"
-    )
+    if press_name=="rkv":
+        save_filename = save_dir / (
+            "__".join([dataset, data_dir if data_dir else "", model_name.replace("/", "--"), press_name, f"budget{cache_budget}",f"hash_bucket{n_hash_buckets}", f"max_new_tokens{max_new_tokens}"])
+            + ".jsonl"
+        )
+    else:
+        save_filename = save_dir / (
+            "__".join([dataset, data_dir if data_dir else "", model_name.replace("/", "--"), press_name, f"budget{cache_budget}", f"max_new_tokens{max_new_tokens}"])
+            + ".jsonl"
+        )
     assert not (fraction < 1.0 and num_samples > 0), "Either fraction or num_samples should be set, not both"
     if num_samples > 0:
         save_filename = save_filename.with_name(save_filename.stem + f"__num_samples{num_samples}" + save_filename.suffix)
@@ -220,6 +227,9 @@ def evaluate(
 
         # Set the cache budget for the press
         press.cache_budget = cache_budget
+
+        if press_name=="rkv":
+            press.n_hash_buckets=n_hash_buckets
 
         # Initialize pipeline with the correct attention implementation
         model_kwargs = {"torch_dtype": "auto"}
@@ -333,6 +343,8 @@ def evaluate(
     metrics["model_name"] = model_name
     metrics["press_name"] = press_name
     metrics["cache_budget"] = cache_budget
+    if press_name=="rkv":
+        metrics["n_hash_buckets"] = n_hash_buckets
     metrics["fraction"] = fraction
     metrics["num_samples"] = num_samples
     metrics["max_new_tokens"] = max_new_tokens

@@ -24,6 +24,7 @@ class RKVPress(ScorerPress):
     # compression_ratio: float = 0.0
     window_size: int = 8 # number of observation tokens always kept in the cache
     kernel_size: int = 5
+    n_hash_buckets:int=6
 
     def __post_init__(self):
         super().__post_init__()
@@ -60,12 +61,11 @@ class RKVPress(ScorerPress):
 
         # Compute attention for first q_len - window_size tokens
         key_states = repeat_kv(keys, num_key_value_groups)
-
         attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(head_dim)
-        attention_mask = torch.ones_like(attn_weights) * float("-inf")
+        attention_mask = torch.ones_like(attn_weights) * float("-1e9")
         attention_mask = torch.triu(attention_mask, diagonal=q_len - window_size + 1)
         attn_weights += attention_mask
-        attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
+        attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.bfloat16).to(query_states.dtype)
         attn_weights = attn_weights[..., :-window_size]
 
         return attn_weights
@@ -103,7 +103,6 @@ class RKVPress(ScorerPress):
         # normalize keys by dividing the l2 norm of keys + eps (1e-8) 
         eps = 1e-8
         keys_norm = keys.norm(dim=-1, keepdim=True) + eps
-        keys_norm = torch.clamp(keys.norm(dim=-1, keepdim=True), min=1e-6)
         keys = keys / keys_norm
 
         ### Original Algorithm: directly using the cosine similarity
@@ -124,26 +123,24 @@ class RKVPress(ScorerPress):
         keys_flat = keys_flat[:, :, : -self.window_size, :]  # Exclude the last window_size keys
 
         # Construct LSH buckets
-        n_hash_buckets=16
-        proj_matrix = torch.randn(keys_flat.shape[-1],n_hash_buckets, device=keys.device).to(keys_flat.dtype)  # Random projection matrix
+        proj_matrix = torch.randn(keys_flat.shape[-1],self.n_hash_buckets, device=keys.device).to(keys_flat.dtype)  # Random projection matrix
         # Dixi: I use random projection here has hash function for easiest implementation
         hash_bits = torch.einsum("bhqd,dk->bhqk", keys_flat, proj_matrix)
         hash_codes = (hash_bits > 0).int()
-        powers_of_two = 2 ** torch.arange(n_hash_buckets, device=keys.device, dtype=torch.float32)
+        powers_of_two = 2 ** torch.arange(self.n_hash_buckets, device=keys.device, dtype=torch.bfloat16)
         hash_codes_int = torch.sum(hash_codes * powers_of_two, dim=-1)  # [B, H, Q]
 
-        redundency = torch.zeros_like(hash_codes_int, dtype=torch.float32)  # [B, H, Q]
+        redundency = torch.zeros_like(hash_codes_int, dtype=torch.bfloat16)  # [B, H, Q]
         for b in range(bsz):
             for h in range(num_key_value_heads):
                 codes = hash_codes_int[b, h]  # [Q]
                 unique, counts = torch.unique(codes, return_counts=True)
                 count_dict = dict(zip(unique.tolist(), counts.tolist()))
                 redundency[b, h] = torch.tensor([count_dict[c.item()] for c in codes], device=keys.device)
-        
-        redundency = torch.clamp(redundency, min=1.0)  # ensure no zero or negative
-        redundency = F.softmax(redundency, dim=-1, dtype=torch.float32).to(scores.dtype)
+        redundency = F.softmax(redundency, dim=-1, dtype=torch.bfloat16).to(scores.dtype)
 
         lam = 0.1
+        
         scores = lam * scores + (1 - lam) * redundency
         # Add back the observation window. Use max score to make sure the window is not pruned.
         scores = F.pad(scores, (0, self.window_size), value=scores.max().item())
@@ -161,7 +158,6 @@ class RKVPress(ScorerPress):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         if self.cache_budget == 0:
             return keys, values
-
         kv_len = keys.shape[2]
         if self.cache_budget >= kv_len:
             return keys, values
@@ -182,10 +178,14 @@ class RKVPress(ScorerPress):
         # Prune keys and values
         keys = keys.gather(2, indices).contiguous()
         values = values.gather(2, indices).contiguous()
+        # remove nan in keys and values
+        keys = torch.nan_to_num(keys, nan=0.0)  
+        values = torch.nan_to_num(values, nan=0.0)
 
         self.accumulated_tokens = 0  # Reset after compression
         self.acc_hidden_states = torch.zeros(
             (1, self.compress_interval, 4096), dtype=torch.bfloat16, device="cuda"
         ) # Reset accumulated hidden states
+
         return keys, values
 
