@@ -133,10 +133,23 @@ class BasePress:
             keys = cache.key_cache[module.layer_idx]
             values = cache.value_cache[module.layer_idx]
 
+        torch.cuda.synchronize()
+        torch.cuda.empty_cache()
+        start=time.time()
+
         if is_prefilling:
             keys, values = self.compress_prefilling(module, hidden_states, keys, values, output[1], kwargs)
         else:
             keys, values = self.compress_decoding(module, hidden_states, keys, values, output[1], kwargs)
+
+        torch.cuda.synchronize()
+        torch.cuda.empty_cache()
+        execution_time=time()-start
+
+        if is_prefilling:
+            print(f"Prefilling {q_len} tokens took {execution_time:.2f} seconds")
+        else:
+            print(f"Decoding {q_len} tokens took {execution_time:.2f} seconds")
 
         if isinstance(cache, QuantizedCache):
             cache._quantized_key_cache[module.layer_idx] = cache._quantize(keys, axis=cache.axis_key)

@@ -7,6 +7,7 @@ import logging
 import os
 from pathlib import Path
 from typing import Optional
+from time import time
 
 import torch
 from datasets import load_dataset
@@ -263,6 +264,16 @@ def evaluate(
             if max_new_tokens is None:
                 max_new_tokens = 16 * 1024 - inputs["input_ids"].shape[1] # use 16k for max length for now
 
+            # Memory
+            torch.cuda.reset_peak_memory_stats()
+            torch.cuda.empty_cache()
+            idle_peak_memory = torch.cuda.max_memory_allocated()
+            initial_peak_memory = torch.cuda.max_memory_allocated()
+
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+            start=time.time()
+
             # Run generation
             if do_sampling:
                 with press(model) if press is not None else contextlib.nullcontext():
@@ -292,6 +303,12 @@ def evaluate(
             response = tokenizer.decode(outputs[0][pred_start:], skip_special_tokens=True)
             model_answer = extractor(response)
 
+            peak_memory = torch.cuda.max_memory_allocated()
+            torch.cuda.empty_cache()
+            torch.cuda.reset_peak_memory_stats()
+            memory_usage=peak_memory / 1024**3
+            execution_time=time()-start
+
             # calculate the compression ratio
             input_token_count = inputs["input_ids"].shape[1]
             output_token_count = outputs[0].shape[0] - input_token_count
@@ -313,6 +330,8 @@ def evaluate(
                     "total_token_count": total_token_count,
                     "cache_budget": cache_budget,
                     "compression_ratio": actual_compression,
+                    "memory_usage": memory_usage,
+                    "execution_time": execution_time,
                 }
             )
             save_objs.append(save_obj)
