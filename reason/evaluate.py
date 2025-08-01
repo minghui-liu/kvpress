@@ -35,6 +35,7 @@ from kvpress import (
     StreamingLLMPress,
     FullPress,
     RKVPress,
+    RKVLSHPress,
     H2OPress,
 )
 
@@ -99,6 +100,7 @@ PRESS_DICT = {
     "random": RandomPress(),
     "streaming_llm": StreamingLLMPress(),
     "rkv": RKVPress(),
+    "rkvlsh": RKVLSHPress(),
     "full": FullPress(),
 }
 
@@ -131,6 +133,7 @@ def evaluate(
     compression_ratio: float = 0.1,
     key_channel_compression_ratio: float = 0.5,
     n_hash_buckets: int = 6,
+    lam:float=0.1
 ):
     """
     Evaluate a model on a dataset using a press and save the results
@@ -183,9 +186,9 @@ def evaluate(
 
     save_dir = Path(__file__).parent / "results"
     save_dir.mkdir(exist_ok=True)
-    if press_name=="rkv":
+    if press_name=="rkvlsh":
         save_filename = save_dir / (
-            "__".join([dataset, data_dir if data_dir else "", model_name.replace("/", "--"), press_name, f"budget{cache_budget}",f"hash_bucket{n_hash_buckets}", f"max_new_tokens{max_new_tokens}"])
+            "__".join([dataset, data_dir if data_dir else "", model_name.replace("/", "--"), press_name, f"budget{cache_budget}",f"hash_bucket{n_hash_buckets}", f"max_new_tokens{max_new_tokens}",f"lam{int(lam*10)}"])
             + ".jsonl"
         )
     else:
@@ -229,8 +232,9 @@ def evaluate(
         # Set the cache budget for the press
         press.cache_budget = cache_budget
 
-        if press_name=="rkv":
+        if press_name=="rkvlsh":
             press.n_hash_buckets=n_hash_buckets
+            press.lam = lam
 
         # Initialize pipeline with the correct attention implementation
         model_kwargs = {"torch_dtype": "auto"}
@@ -272,7 +276,7 @@ def evaluate(
 
             torch.cuda.synchronize()
             torch.cuda.empty_cache()
-            start=time.time()
+            start=time()
 
             # Run generation
             if do_sampling:
@@ -362,8 +366,9 @@ def evaluate(
     metrics["model_name"] = model_name
     metrics["press_name"] = press_name
     metrics["cache_budget"] = cache_budget
-    if press_name=="rkv":
+    if press_name=="rkvlsh":
         metrics["n_hash_buckets"] = n_hash_buckets
+        metrics["lam"] = lam
     metrics["fraction"] = fraction
     metrics["num_samples"] = num_samples
     metrics["max_new_tokens"] = max_new_tokens
