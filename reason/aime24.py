@@ -1,5 +1,5 @@
 
-aime25_prompt = "\nSolve the problem step by step. Wrap your final answer in \"\\boxed{}\"."
+aime24_prompt = "\nSolve the problem step by step. Wrap your final answer in \"\\boxed{}\"."
 
 
 def aime24_formatter(example):
