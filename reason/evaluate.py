@@ -23,6 +23,7 @@ from strategyqa import strategyqa_formatter, strategyqa_extractor, strategyqa_sc
 from logiqa import logiqa_formatter, logiqa_scorer
 from openbookqa import openbookqa_formatter, openbookqa_scorer
 from aime25 import aime25_formatter, aime25_scorer
+from aime24 import aime24_formatter, aime24_scorer
 from commonsenseqa import commonsenseqa_formatter, commonsenseqa_scorer
 from math500 import math500_formatter, math500_scorer
 from drop import drop_formatter, drop_scorer
@@ -47,6 +48,7 @@ DATASET_DICT = {
     "logiqa": ("lucasmccabe/logiqa", None, "test"),
     "openbookqa": ("allenai/openbookqa", "main", "test"),
     "aime25": ("math-ai/aime25", None, "test"),
+    "aime24": ("math-ai/aime24", None, "test"),
     "commonsenseqa": ("tau/commonsense_qa", None, "validation"),
     "math500": ("HuggingFaceH4/MATH-500", None, "test"),
     "drop": ("ucinlp/drop", None, "validation"),
@@ -73,6 +75,7 @@ EXTRACTOR_DICT = {
     "logiqa": default_extractor,
     "openbookqa": default_extractor,
     "aime25": default_extractor,
+    "aime24": default_extractor,
     "commonsenseqa": default_extractor,
     "math500": default_extractor,
     "drop": default_extractor,
@@ -86,6 +89,7 @@ SCORER_DICT = {
     "logiqa": logiqa_scorer,
     "openbookqa": openbookqa_scorer,
     "aime25": aime25_scorer,
+    "aime24": aime24_scorer,
     "commonsenseqa": commonsenseqa_scorer,
     "math500": math500_scorer,
     "drop": drop_scorer,
