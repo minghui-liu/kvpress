@@ -119,17 +119,6 @@ class BasePress:
             Modified output of the forward pass of the layer.
 
         """
-        # Debug: print what kwargs are actually passed
-        print(f"DEBUG: forward_hook kwargs keys: {list(kwargs.keys())}")
-        print(f"DEBUG: forward_hook called with module: {type(module)}")
-
-        if "past_key_value" not in kwargs:
-            print("DEBUG: past_key_value not in kwargs, skipping compression")
-            return output
-
-        if "cache_position" not in kwargs:
-            print("DEBUG: cache_position not in kwargs, skipping compression")
-            return output
 
         hidden_states = kwargs["hidden_states"]
         cache = kwargs["past_key_value"]

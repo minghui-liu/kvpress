@@ -1,1 +1,0 @@
-{"accuracy": 0.05, "avg_compression": 0.34380448369763417, "num_samples": 0, "dataset": "math500", "data_split": "test[300:320]", "data_dir": null, "model_name": "deepseek-ai/DeepSeek-R1-Distill-Qwen-14B", "press_name": "rkv", "cache_budget": 1024, "fraction": 1.0, "max_new_tokens": 16384, "max_context_length": null, "random_seed": 42}
