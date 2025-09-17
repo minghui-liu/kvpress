@@ -26,7 +26,7 @@ def accuracy(predictions, answers):
     return correct / total if total > 0 else 0.0
     
 
-def aime25_scorer(predictions, answers):
+def aime24_scorer(predictions, answers):
     """
     Score the prediction for AIME25 dataset.
     """
