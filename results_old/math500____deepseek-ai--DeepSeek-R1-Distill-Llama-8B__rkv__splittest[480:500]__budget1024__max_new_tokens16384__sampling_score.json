@@ -1,0 +1,1 @@
+{"accuracy": 0.0, "avg_compression": 0.10987893303858057, "num_samples": 0, "dataset": "math500", "data_split": "test[480:500]", "data_dir": null, "model_name": "deepseek-ai/DeepSeek-R1-Distill-Llama-8B", "press_name": "rkv", "cache_budget": 1024, "fraction": 1.0, "max_new_tokens": 16384, "max_context_length": null, "random_seed": 42}

@@ -1,4 +1,6 @@
 dev_notebooks/
+results_old/
+reason/results/
 results/
 reports/
 .DS_Store
