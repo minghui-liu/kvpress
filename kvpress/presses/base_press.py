@@ -17,6 +17,7 @@ from transformers import (
     QuantizedCache,
     Qwen2ForCausalLM,
 )
+from time import time
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +96,33 @@ class BasePress:
         """
         raise NotImplementedError("compress method must be implemented in subclass")
 
+    def __post_init__(self):
+        """Initialize timing tracking attributes"""
+        self.prefill_time: float = 0.0
+        self.decoding_time: float = 0.0
+        self.total_prefill_tokens: int = 0
+        self.total_decoding_tokens: int = 0
+
+    def reset_timing(self):
+        """Reset timing counters"""
+        self.prefill_time = 0.0
+        self.decoding_time = 0.0
+        self.total_prefill_tokens = 0
+        self.total_decoding_tokens = 0
+
+    def get_timing_metrics(self):
+        """Get timing metrics for performance analysis"""
+        total_time = self.prefill_time + self.decoding_time
+        output_tokens_per_second = self.total_decoding_tokens / self.decoding_time if self.decoding_time > 0 else 0.0
+        
+        return {
+            "prefill_time": self.prefill_time,
+            "decoding_time": self.decoding_time,
+            "total_time": total_time,
+            "total_prefill_tokens": self.total_prefill_tokens,
+            "total_decoding_tokens": self.total_decoding_tokens,
+            "output_tokens_per_second": output_tokens_per_second
+        }
     
     def forward_hook(self, module: nn.Module, input: list[torch.Tensor], kwargs: dict, output: list):
         """
@@ -135,7 +163,7 @@ class BasePress:
 
         torch.cuda.synchronize()
         torch.cuda.empty_cache()
-        start=time.time()
+        start=time()
 
         if is_prefilling:
             keys, values = self.compress_prefilling(module, hidden_states, keys, values, output[1], kwargs)
@@ -146,10 +174,18 @@ class BasePress:
         torch.cuda.empty_cache()
         execution_time=time()-start
 
+        # Track timing for prefill vs decoding phases
         if is_prefilling:
-            print(f"Prefilling {q_len} tokens took {execution_time:.2f} seconds")
+            self.prefill_time += execution_time
+            self.total_prefill_tokens += q_len
         else:
-            print(f"Decoding {q_len} tokens took {execution_time:.2f} seconds")
+            self.decoding_time += execution_time
+            self.total_decoding_tokens += q_len
+
+        # if is_prefilling:
+        #     print(f"Prefilling {q_len} tokens took {execution_time:.2f} seconds")
+        # else:
+        #     print(f"Decoding {q_len} tokens took {execution_time:.2f} seconds")
 
         if isinstance(cache, QuantizedCache):
             cache._quantized_key_cache[module.layer_idx] = cache._quantize(keys, axis=cache.axis_key)

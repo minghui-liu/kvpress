@@ -35,7 +35,7 @@ from kvpress import (
     StreamingLLMPress,
     FullPress,
     RKVPress,
-    RKVLSHPress,
+    RKVPress2,
     H2OPress,
 )
 
@@ -100,7 +100,7 @@ PRESS_DICT = {
     "random": RandomPress(),
     "streaming_llm": StreamingLLMPress(),
     "rkv": RKVPress(),
-    "rkvlsh": RKVLSHPress(),
+    "rkv2": RKVPress2(),
     "full": FullPress(),
 }
 
@@ -236,6 +236,7 @@ def evaluate(
             press.n_hash_buckets=n_hash_buckets
             press.lam = lam
 
+
         # Initialize pipeline with the correct attention implementation
         model_kwargs = {"torch_dtype": "auto"}
         if isinstance(press, H2OPress):
@@ -278,6 +279,10 @@ def evaluate(
             torch.cuda.empty_cache()
             start=time()
 
+            # Reset timing before generation
+            if press is not None:
+                press.reset_timing()
+
             # Run generation
             if do_sampling:
                 with press(model) if press is not None else contextlib.nullcontext():
@@ -313,6 +318,11 @@ def evaluate(
             memory_usage=peak_memory / 1024**3
             execution_time=time()-start
 
+            # Get timing metrics from press if available
+            timing_metrics = {}
+            if press is not None:
+                timing_metrics = press.get_timing_metrics()
+
             # calculate the compression ratio
             input_token_count = inputs["input_ids"].shape[1]
             output_token_count = outputs[0].shape[0] - input_token_count
@@ -338,6 +348,9 @@ def evaluate(
                     "execution_time": execution_time,
                 }
             )
+            
+            # Add timing metrics to save_obj
+            save_obj.update(timing_metrics)
             save_objs.append(save_obj)
 
         with open(str(save_filename), "w") as f:
@@ -359,6 +372,16 @@ def evaluate(
     # Add average compression ratio
     avg_compression = sum([obj["compression_ratio"] for obj in save_obj]) / len(save_obj)
     metrics["avg_compression"] = avg_compression
+    
+    # Add timing metrics averages
+    if save_obj and "prefill_time" in save_obj[0]:
+        metrics["avg_prefill_time"] = sum([obj["prefill_time"] for obj in save_obj]) / len(save_obj)
+        metrics["avg_decoding_time"] = sum([obj["decoding_time"] for obj in save_obj]) / len(save_obj)
+        metrics["avg_total_time"] = sum([obj["total_time"] for obj in save_obj]) / len(save_obj)
+        metrics["avg_output_tokens_per_second"] = sum([obj["output_tokens_per_second"] for obj in save_obj]) / len(save_obj)
+        metrics["total_prefill_tokens"] = sum([obj["total_prefill_tokens"] for obj in save_obj])
+        metrics["total_decoding_tokens"] = sum([obj["total_decoding_tokens"] for obj in save_obj])
+    
     metrics["num_samples"] = len(save_obj)
     metrics["dataset"] = dataset
     metrics["data_split"] = data_split

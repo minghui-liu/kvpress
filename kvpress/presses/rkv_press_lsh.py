@@ -17,8 +17,6 @@ from kvpress.presses.scorer_press import ScorerPress
 class RKVLSHPress(ScorerPress):
     """
     RKV (https://www.arxiv.org/pdf/2505.24133)
-
-    With LSH modification for redundancy estimation.
     """
 
     cache_budget: int = 0
@@ -27,7 +25,8 @@ class RKVLSHPress(ScorerPress):
     window_size: int = 8 # number of observation tokens always kept in the cache
     kernel_size: int = 5
     n_hash_buckets: int=6
-    lam: float=0.1
+    cos_hamming_distance_bucket: torch.Tensor=None
+    lam: float = 0.1
 
     def __post_init__(self):
         super().__post_init__()
@@ -125,25 +124,46 @@ class RKVLSHPress(ScorerPress):
         keys_flat = keys.view(bsz, num_key_value_heads, -1, keys.shape[-1])
         keys_flat = keys_flat[:, :, : -self.window_size, :]  # Exclude the last window_size keys
 
+        if self.cos_hamming_distance_bucket is None:
+            buckets=torch.arange(2**self.n_hash_buckets)
+            a = buckets.view(-1, 1)  # [N, 1]
+            b = buckets.view(1, -1)  # [1, N]
+            xor_vals = a ^ b
+            hamming = torch.zeros_like(xor_vals, dtype=torch.int64)
+            temp = xor_vals.clone()
+            while True:
+                nonzero_mask = temp != 0
+                if not nonzero_mask.any():
+                    break
+                hamming += (temp & 1)
+                temp = temp >> 1
+            self.cos_hamming_distance_bucket=torch.cos(hamming/self.n_hash_buckets)
+
         # Construct LSH buckets
-        proj_matrix = torch.randn(keys_flat.shape[-1],self.n_hash_buckets, device=keys_flat.device).to(keys_flat.dtype)  # Random projection matrix
+        proj_matrix = torch.randn(keys_flat.shape[-1],self.n_hash_buckets, device=keys.device).to(keys_flat.dtype)  # Random projection matrix
         # Dixi: I use random projection here has hash function for easiest implementation
         hash_bits = torch.einsum("bhqd,dk->bhqk", keys_flat, proj_matrix)
         hash_codes = (hash_bits > 0).int()
         powers_of_two = 2 ** torch.arange(self.n_hash_buckets, device=keys.device, dtype=torch.bfloat16)
         hash_codes_int = torch.sum(hash_codes * powers_of_two, dim=-1)  # [B, H, Q]
 
-        redundency = torch.zeros_like(hash_codes_int, dtype=torch.bfloat16)  # [B, H, Q]
+        redundancy= torch.zeros_like(hash_codes_int, dtype=torch.bfloat16)  # [B, H, Q]
         for b in range(bsz):
             for h in range(num_key_value_heads):
-                codes = hash_codes_int[b, h]  # [Q]
-                unique, counts = torch.unique(codes, return_counts=True)
-                count_dict = dict(zip(unique.tolist(), counts.tolist()))
-                redundency[b, h] = torch.tensor([count_dict[c.item()] for c in codes], device=keys.device)
-        redundency = F.softmax(redundency, dim=-1, dtype=torch.bfloat16).to(scores.dtype)
-        print(redundency)
+                # calculate count in each bucket
+                codes= hash_codes_int[b, h]
+                counts=torch.zeros(2**self.n_hash_buckets, device=keys_flat.device, dtype=torch.int32)
+                for bucket_number in torch.arange(2**self.n_hash_buckets):
+                    counts[bucket_number] = torch.sum(codes == bucket_number).item()
+                total_counts= counts.sum().item()
+                avg_cosine = torch.zeros(2**self.n_hash_buckets, device=hash_codes_int.device, dtype=torch.bfloat16)
+                for bucket_number in range(2**self.n_hash_buckets):
+                    weighted_sum = (counts * self.cos_hamming_distance_bucket.to(keys.device)[bucket_number]).sum()
+                    avg_cosine[bucket_number] = weighted_sum / total_counts if total_counts > 0 else 0.0
+                redundancy[b, h] = avg_cosine[codes.long()]
+        redundancy = F.softmax(redundancy, dim=-1, dtype=torch.bfloat16).to(scores.dtype)
 
-        scores = self.lam * scores + (1 - self.lam) * redundency
+        scores = self.lam * scores + (1 - self.lam) * redundancy
         # Add back the observation window. Use max score to make sure the window is not pruned.
         scores = F.pad(scores, (0, self.window_size), value=scores.max().item())
         return scores
