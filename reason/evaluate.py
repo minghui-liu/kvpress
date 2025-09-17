@@ -62,6 +62,7 @@ FORMATTER_DICT = {
     "logiqa": logiqa_formatter,
     "openbookqa": openbookqa_formatter,
     "aime25": aime25_formatter,
+    "aime24": aime24_formatter,
     "commonsenseqa": commonsenseqa_formatter,
     "math500": math500_formatter,
     "drop": drop_formatter,
