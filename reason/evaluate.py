@@ -7,6 +7,7 @@ import logging
 import os
 from pathlib import Path
 from typing import Optional
+from time import time
 
 import torch
 from datasets import load_dataset
@@ -35,6 +36,7 @@ from kvpress import (
     StreamingLLMPress,
     FullPress,
     RKVPress,
+    RKVPress2,
     H2OPress,
 )
 
@@ -103,6 +105,7 @@ PRESS_DICT = {
     "random": RandomPress(),
     "streaming_llm": StreamingLLMPress(),
     "rkv": RKVPress(),
+    "rkv2": RKVPress2(),
     "full": FullPress(),
 }
 
@@ -134,6 +137,8 @@ def evaluate(
     skip_existing: bool = True,
     compression_ratio: float = 0.1,
     key_channel_compression_ratio: float = 0.5,
+    n_hash_buckets: int = 6,
+    lam:float=0.1
 ):
     """
     Evaluate a model on a dataset using a press and save the results
@@ -186,10 +191,16 @@ def evaluate(
 
     save_dir = Path(__file__).parent / "results"
     save_dir.mkdir(exist_ok=True)
-    save_filename = save_dir / (
-        "__".join([dataset, data_dir if data_dir else "", model_name.replace("/", "--"), press_name, f"budget{cache_budget}", f"max_new_tokens{max_new_tokens}"])
-        + ".jsonl"
-    )
+    if press_name=="rkvlsh":
+        save_filename = save_dir / (
+            "__".join([dataset, data_dir if data_dir else "", model_name.replace("/", "--"), press_name, f"budget{cache_budget}",f"hash_bucket{n_hash_buckets}", f"max_new_tokens{max_new_tokens}",f"lam{int(lam*10)}"])
+            + ".jsonl"
+        )
+    else:
+        save_filename = save_dir / (
+            "__".join([dataset, data_dir if data_dir else "", model_name.replace("/", "--"), press_name, f"budget{cache_budget}", f"max_new_tokens{max_new_tokens}"])
+            + ".jsonl"
+        )
     assert not (fraction < 1.0 and num_samples > 0), "Either fraction or num_samples should be set, not both"
     if num_samples > 0:
         save_filename = save_filename.with_name(save_filename.stem + f"__num_samples{num_samples}" + save_filename.suffix)
@@ -226,6 +237,11 @@ def evaluate(
         # Set the cache budget for the press
         press.cache_budget = cache_budget
 
+        if press_name=="rkvlsh":
+            press.n_hash_buckets=n_hash_buckets
+            press.lam = lam
+
+
         # Initialize pipeline with the correct attention implementation
         model_kwargs = {"torch_dtype": "auto"}
         if isinstance(press, H2OPress):
@@ -258,6 +274,20 @@ def evaluate(
             if max_new_tokens is None:
                 max_new_tokens = 16 * 1024 - inputs["input_ids"].shape[1] # use 16k for max length for now
 
+            # Memory
+            torch.cuda.reset_peak_memory_stats()
+            torch.cuda.empty_cache()
+            idle_peak_memory = torch.cuda.max_memory_allocated()
+            initial_peak_memory = torch.cuda.max_memory_allocated()
+
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+            start=time()
+
+            # Reset timing before generation
+            if press is not None:
+                press.reset_timing()
+
             # Run generation
             if do_sampling:
                 with press(model) if press is not None else contextlib.nullcontext():
@@ -287,6 +317,17 @@ def evaluate(
             response = tokenizer.decode(outputs[0][pred_start:], skip_special_tokens=True)
             model_answer = extractor(response)
 
+            peak_memory = torch.cuda.max_memory_allocated()
+            torch.cuda.empty_cache()
+            torch.cuda.reset_peak_memory_stats()
+            memory_usage=peak_memory / 1024**3
+            execution_time=time()-start
+
+            # Get timing metrics from press if available
+            timing_metrics = {}
+            if press is not None:
+                timing_metrics = press.get_timing_metrics()
+
             # calculate the compression ratio
             input_token_count = inputs["input_ids"].shape[1]
             output_token_count = outputs[0].shape[0] - input_token_count
@@ -308,8 +349,13 @@ def evaluate(
                     "total_token_count": total_token_count,
                     "cache_budget": cache_budget,
                     "compression_ratio": actual_compression,
+                    "memory_usage": memory_usage,
+                    "execution_time": execution_time,
                 }
             )
+            
+            # Add timing metrics to save_obj
+            save_obj.update(timing_metrics)
             save_objs.append(save_obj)
 
         with open(str(save_filename), "w") as f:
@@ -331,6 +377,16 @@ def evaluate(
     # Add average compression ratio
     avg_compression = sum([obj["compression_ratio"] for obj in save_obj]) / len(save_obj)
     metrics["avg_compression"] = avg_compression
+    
+    # Add timing metrics averages
+    if save_obj and "prefill_time" in save_obj[0]:
+        metrics["avg_prefill_time"] = sum([obj["prefill_time"] for obj in save_obj]) / len(save_obj)
+        metrics["avg_decoding_time"] = sum([obj["decoding_time"] for obj in save_obj]) / len(save_obj)
+        metrics["avg_total_time"] = sum([obj["total_time"] for obj in save_obj]) / len(save_obj)
+        metrics["avg_output_tokens_per_second"] = sum([obj["output_tokens_per_second"] for obj in save_obj]) / len(save_obj)
+        metrics["total_prefill_tokens"] = sum([obj["total_prefill_tokens"] for obj in save_obj])
+        metrics["total_decoding_tokens"] = sum([obj["total_decoding_tokens"] for obj in save_obj])
+    
     metrics["num_samples"] = len(save_obj)
     metrics["dataset"] = dataset
     metrics["data_split"] = data_split
@@ -338,6 +394,9 @@ def evaluate(
     metrics["model_name"] = model_name
     metrics["press_name"] = press_name
     metrics["cache_budget"] = cache_budget
+    if press_name=="rkvlsh":
+        metrics["n_hash_buckets"] = n_hash_buckets
+        metrics["lam"] = lam
     metrics["fraction"] = fraction
     metrics["num_samples"] = num_samples
     metrics["max_new_tokens"] = max_new_tokens

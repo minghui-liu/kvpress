@@ -14,7 +14,7 @@ from kvpress.presses.scorer_press import ScorerPress
 
 
 @dataclass
-class RKVPress(ScorerPress):
+class RKVLSHPress(ScorerPress):
     """
     RKV (https://www.arxiv.org/pdf/2505.24133)
     """
