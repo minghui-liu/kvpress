@@ -146,7 +146,8 @@ class RKVPress(ScorerPress):
             return keys, values
         
         if self.accumulated_tokens < self.compress_interval:
-            self.accumulated_tokens += 1
+            if getattr(module, "layer_idx", -1) == 0:
+                self.accumulated_tokens += 1
             # # print(f"[DEBUG] hidden_states shape: {hidden_states.shape}, acc_hidden_states shape: {self.acc_hidden_states.shape}, accumulated_tokens: {self.accumulated_tokens}")
             self.acc_hidden_states[:, self.accumulated_tokens - 1, :] = hidden_states
             return keys, values
@@ -162,9 +163,10 @@ class RKVPress(ScorerPress):
         keys = keys.gather(2, indices).contiguous()
         values = values.gather(2, indices).contiguous()
 
-        self.accumulated_tokens = 0  # Reset after compression
-        self.acc_hidden_states = torch.zeros(
-            (1, self.compress_interval, 4096), dtype=torch.bfloat16, device="cuda"
-        ) # Reset accumulated hidden states
+        if getattr(module, "layer_idx", -1) == 0:
+            self.accumulated_tokens = 0  # Reset after compression
+            self.acc_hidden_states = torch.zeros(
+                (1, self.compress_interval, 4096), dtype=torch.bfloat16, device="cuda"
+            ) # Reset accumulated hidden states
         return keys, values
 
