@@ -50,6 +50,9 @@ class KnormPress(ScorerPress):
         # Compute scores with L2 norm (more negative = more important)
         scores = self.score(module, hidden_states, keys, values, attentions, False, kwargs)
         indices = scores.topk(self.cache_budget, dim=-1).indices  # [B, Hkv, K]
+        full_len = int(scores.shape[-1])
+        kept_len = int(indices.shape[2])
+
 
         # Debug counts
         # try:
