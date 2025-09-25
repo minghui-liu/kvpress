@@ -95,6 +95,34 @@ class BasePress:
         """
         raise NotImplementedError("compress method must be implemented in subclass")
 
+    def __post_init__(self):
+        """Initialize timing tracking attributes"""
+        self.prefill_time: float = 0.0
+        self.decoding_time: float = 0.0
+        self.total_prefill_tokens: int = 0
+        self.total_decoding_tokens: int = 0
+
+    def reset_timing(self):
+        """Reset timing counters"""
+        self.prefill_time = 0.0
+        self.decoding_time = 0.0
+        self.total_prefill_tokens = 0
+        self.total_decoding_tokens = 0
+
+    def get_timing_metrics(self):
+        """Get timing metrics for performance analysis"""
+        total_time = self.prefill_time + self.decoding_time
+        output_tokens_per_second = self.total_decoding_tokens / self.decoding_time if self.decoding_time > 0 else 0.0
+
+        return {
+            "prefill_time": self.prefill_time,
+            "decoding_time": self.decoding_time,
+            "total_time": total_time,
+            "total_prefill_tokens": self.total_prefill_tokens,
+            "total_decoding_tokens": self.total_decoding_tokens,
+            "output_tokens_per_second": output_tokens_per_second
+        }
+
     
     def forward_hook(self, module: nn.Module, input: list[torch.Tensor], kwargs: dict, output: list):
         """
@@ -119,9 +147,10 @@ class BasePress:
             Modified output of the forward pass of the layer.
 
         """
-
         hidden_states = kwargs["hidden_states"]
+        
         cache = kwargs["past_key_value"]
+
         q_len = hidden_states.shape[1]
 
         is_prefilling = kwargs["cache_position"][-1] <= q_len
@@ -132,6 +161,12 @@ class BasePress:
         else:
             keys = cache.key_cache[module.layer_idx]
             values = cache.value_cache[module.layer_idx]
+
+        # Print every attention layer encountered (disabled)
+        # try:
+        #     print(f"[ATTN] layer_idx={getattr(module, 'layer_idx', -1)} kv_len={keys.shape[2]} prefill={is_prefilling}")
+        # except Exception:
+        #     print(f"[ATTN] layer_idx={getattr(module, 'layer_idx', -1)} prefill={is_prefilling}")
 
         if is_prefilling:
             keys, values = self.compress_prefilling(module, hidden_states, keys, values, output[1], kwargs)

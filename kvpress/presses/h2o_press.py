@@ -4,6 +4,8 @@
 
 import logging
 from dataclasses import dataclass
+import os
+import csv
 from typing import Tuple
 
 import torch
@@ -24,6 +26,8 @@ class H2OPress(ScorerPress):
 
     cache_budget: int = 0
     output_attentions: bool = True
+    attn_csv_path: str = "attn_loss.csv"
+    prune_step: int = 0
 
     def __post_init__(self):
         if not self.output_attentions:
@@ -128,10 +132,63 @@ class H2OPress(ScorerPress):
         # Get indices of KV pairs with the lowest scores
         indices = scores.topk(self.cache_budget, dim=-1).indices
 
+        # print("---" * 10)
+        # print(f"[DEBUG] (PRE) keys shape: {keys.shape}, values shape: {values.shape}")
+        full_len = scores.shape[-1]
+        kept_len = indices.shape[2]
+        # print(f"[DEBUG] diff indices: {full_len - kept_len}")
+
+        # Compute per-head attention loss similar to RKV (pre-attn mass removed)
+        try:
+            bsz, n_heads, _, q_len = attentions.shape
+            n_kv_groups = module.num_key_value_groups
+            n_kv_heads = n_heads // n_kv_groups
+            # Sum over query dimension to get per-key attention mass, then average kv groups → [B, H_kv, L]
+            attn_sum = attentions.sum(2)
+            attn_kv = attn_sum.view(bsz, n_kv_heads, n_kv_groups, q_len).mean(2)
+
+            csv_path = self.attn_csv_path
+            file_exists = os.path.exists(csv_path)
+            with open(csv_path, "a", newline="") as f:
+                writer = csv.writer(f)
+                if not file_exists:
+                    writer.writerow([
+                        "prune_step",
+                        "layer_idx",
+                        "head_idx",
+                        "kv_len_pre",
+                        "attn_len",
+                        "diff_indices",
+                        "attn_loss",
+                    ])
+                for head_idx in range(n_kv_heads):
+                    head_attn = attn_kv[:, head_idx, :]  # [B, L]
+                    kept_pos = indices[:, head_idx, :]   # [B, K]
+                    pre_total = head_attn.sum(-1)        # [B]
+                    kept_total = head_attn.gather(-1, kept_pos).sum(-1)  # [B]
+                    loss_h = (pre_total - kept_total).sum()  # scalar over batch
+                    row = [
+                        self.prune_step,
+                        getattr(module, "layer_idx", -1),
+                        head_idx,
+                        keys.shape[2],
+                        full_len,
+                        int(full_len - kept_len),
+                        float(loss_h.item()),
+                    ]
+                    writer.writerow(row)
+                    #print(f"[CSV] {row}")
+            self.prune_step += 1
+        except Exception as e:
+            print(f"[WARN] H2O attn loss logging failed: {e}")
+
         # Prune keys and values
         kv_indices = indices.unsqueeze(-1).expand(-1, -1, -1, module.head_dim) # bsz, num_key_value_heads, cache_budget, head_dim
         keys = keys.gather(2, kv_indices).contiguous()
         values = values.gather(2, kv_indices).contiguous()
+
+        # print(f"[DEBUG] (PRUNED) keys shape: {keys.shape}, values shape: {values.shape}")
+        # print("===" * 10)
 
         # Prune acc attention weights and n_tokens_in_sum
         self.acc_attn = self.acc_attn.gather(2, indices).contiguous()

@@ -62,7 +62,12 @@ class ScorerPress(BasePress):
             return keys, values
 
         # Compute scores
-        scores = self.score(module, hidden_states, keys, values, attentions, True, kwargs)
+        score_result = self.score(module, hidden_states, keys, values, attentions, True, kwargs)
+        # Handle case where score returns tuple (scores, attn_weights) or just scores
+        if isinstance(score_result, tuple):
+            scores = score_result[0]
+        else:
+            scores = score_result
         # Get indices of KV pairs with the lowest scores
         indices = scores.topk(self.cache_budget, dim=-1).indices
         indices = indices.unsqueeze(-1).expand(-1, -1, -1, module.head_dim)
@@ -91,7 +96,12 @@ class ScorerPress(BasePress):
             return keys, values
 
         # Compute scores
-        scores = self.score(module, hidden_states, keys, values, attentions, False, kwargs)
+        score_result = self.score(module, hidden_states, keys, values, attentions, False, kwargs)
+        # Handle case where score returns tuple (scores, attn_weights) or just scores
+        if isinstance(score_result, tuple):
+            scores = score_result[0]
+        else:
+            scores = score_result
         # Get indices of KV pairs with the lowest scores
         indices = scores.topk(self.cache_budget, dim=-1).indices
         indices = indices.unsqueeze(-1).expand(-1, -1, -1, module.head_dim)
