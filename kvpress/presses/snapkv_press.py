@@ -38,14 +38,15 @@ class SnapKVPress(ScorerPress):
 
         # Get last window_size queries
         if hasattr(module, "q_proj"):
-            query_states = module.q_proj(hidden_states[:, -window_size:])
+          query_states = module.q_proj(hidden_states[:, -window_size:])
         elif hasattr(module, "qkv_proj"):
             qkv = module.qkv_proj(hidden_states[:, -window_size:])
             query_states = qkv[..., : num_heads * head_dim]
         else:
             raise NotImplementedError(f"SnapKV not yet implemented for {module.__class__}.")
-
-        query_states = query_states.view(bsz, window_size, num_heads, head_dim).transpose(1, 2)
+        actual_window_size = query_states.shape[1]
+        
+        query_states = query_states.view(bsz, actual_window_size, num_heads, head_dim).transpose(1, 2)
 
         # Apply RoPE
         cos, sin = position_embeddings
