@@ -117,79 +117,11 @@ By default, the `DynamicCache` is used (no quantization).
 > [!IMPORTANT]  
 > To use the `QuantizedCache`, you need to install additional dependencies (_e.g._ `pip install optimum-quanto`).
 
-## FAQ
+# Tasks
+- [ ] Fix RKV and RKV_LSH
+- [ ] Checkpointing / Graceful run shutdown
+- [ ] Confirm Attn Loss Implementation For All Presses
+- [ ] Text Visualization
+- [ ] Integrated Latency Code from Dixi
+- [ ] Confirm SnapKV working
 
-<details><summary> 
-
-### Which models are supported ? 
-</summary>
-
-Some presses depend on the model architecture (_e.g._ `ExpectedAttentionPress` or `SnapKVPress`) hence they might not work with all models. We tested support for `LlamaForCausalLM`, `MistralForCausalLM`, `Phi3ForCausalLM` and `Qwen2ForCausalLM` but many other models might be supported out of the box because their implementation is often similar in transformers.
-</details>
-
-<details><summary> 
-
-### How to run inference on multiple GPUs ? 
-</summary>
-
-kvpress supports multi-GPU inference through [accelerate](https://huggingface.co/docs/accelerate/en/index):
-
-```python
-pipe = pipeline("kv-press-text-generation", model=model, device_map="auto")
-```
-
-</details>
-
-
-<details> <summary> 
-
-### What are the memory and throughput gains ?
-</summary>
-
-Memory usage should be reduced by around `compression_ratio * kv_cache_size`. As the KV cache is smaller, decoding should also be faster. You can measure peak memory usage gain and total time gain using [this notebook](notebooks/speed_and_memory.ipynb).
-</details>
-
-
-<details> <summary> 
-
-### How does a press work ? </summary>
-
-A press registers a forward hook (`press.forward_hook` method) to each attention layer during the pre-filling phase. Registration can be applied using the press as a context manager (`press.__call__` method):
-
-```python
-import torch
-from transformers import AutoModelForCausalLM
-from kvpress import KnormPress
-
-device = "cuda:0"
-ckpt = "meta-llama/Meta-Llama-3.1-8B-Instruct"
-model = AutoModelForCausalLM.from_pretrained(ckpt).to(device)
-press = KnormPress(compression_ratio=0.4)
-
-inputs = model.dummy_inputs["input_ids"].to(device)
-
-with torch.no_grad():
-    print(model(inputs).past_key_values[0][0].shape)
-    # torch.Size([3, 8, 5, 128])
-    
-with torch.no_grad(), press(model):
-    print(model(inputs).past_key_values[0][0].shape)
-    # torch.Size([3, 8, 3, 128])
-```
-</details>
-
-<details><summary> 
-
-### Why not using model.generate ? 
-</summary>
-
-In fact you can use `model.generate` with a press by using the press as a context manager:
-
-```python
-with press(model):
-    outputs = model.generate(inputs)
-```
-
-However, the `generate` method does not allow to exclude the question from the compression, which would artificially favors methods such as SnapKV. Ideally, we want a compression method that works whatever comes after the context (_e.g._ for use cases such as chat or document question answering). Finally the `generate` method does not allow to provide generation for multiple questions at once.
-
-</details>
