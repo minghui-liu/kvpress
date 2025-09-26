@@ -75,25 +75,6 @@ Finally we provide wrapper presses that can be combined with other presses:
 
 For a detailed list of existing KV cache compression methods, check [Awesome-KV-Cache-Compression](https://github.com/October2001/Awesome-KV-Cache-Compression) or [Awesome-LLM-Compression](https://github.com/HuangOwen/Awesome-LLM-Compression?tab=readme-ov-file#kv-cache-compression)
 
-
-## Quantization
-
-We support KV cache quantization through the transformers `QuantizedCache` class (see [HF blog post](https://huggingface.co/blog/kv-cache-quantization#how-to-use-quantized-kv-cache-in-%F0%9F%A4%97-transformers)). To use it, simply pass a cache object to your pipeline:
-
-```python
-from transformers import QuantizedCacheConfig, QuantoQuantizedCache
-
-config = QuantizedCacheConfig(nbits=4)
-cache = QuantoQuantizedCache(config)
-
-pipe(..., cache=cache)
-```
-
-By default, the `DynamicCache` is used (no quantization). 
-
-> [!IMPORTANT]  
-> To use the `QuantizedCache`, you need to install additional dependencies (_e.g._ `pip install optimum-quanto`).
-
 # Tasks
 - [ ] Fix RKV and RKV_LSH
 - [ ] Checkpointing / Graceful run shutdown
