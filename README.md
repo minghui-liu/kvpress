@@ -75,17 +75,6 @@ Finally we provide wrapper presses that can be combined with other presses:
 
 For a detailed list of existing KV cache compression methods, check [Awesome-KV-Cache-Compression](https://github.com/October2001/Awesome-KV-Cache-Compression) or [Awesome-LLM-Compression](https://github.com/HuangOwen/Awesome-LLM-Compression?tab=readme-ov-file#kv-cache-compression)
 
-## Evaluation
-
-The [speed_and_memory.ipynb](notebooks/speed_and_memory.ipynb) notebook can help you to measure peak memory usage and total time gain.
-
-![memory](evaluation/assets/peak_memory_consumption_xkcd.png)
-
-We provide a simple CLI to evaluate the performance of the different presses on several long-context datasets. Below we report the average performance on the RULER dataset with 4k context length for different presses.
-
-![RULER](evaluation/assets/ruler_llama_xkcd.png)
-
-Please refer to the [evaluation](evaluation/README.md) directory for more details and results.
 
 ## Quantization
 
