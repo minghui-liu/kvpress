@@ -9,38 +9,6 @@ If possible, install flash attention:
 pip install flash-attn --no-build-isolation
 ```
 
-## Usage
-
-kvpress provides a set of "presses" that compress the KV cache during the prefilling-phase. Each press is associated with a `compression_ratio` attribute that measures the compression of the cache. The easiest way to use a press is through our custom `KVPressTextGenerationPipeline`. It is automatically registered as a transformers pipeline with the name "kv-press-text-generation" when kvpress is imported and handles chat templates and tokenization for you:
-
-```python
-from transformers import pipeline
-from kvpress import ExpectedAttentionPress
-
-device = "cuda:0"
-model = "meta-llama/Llama-3.1-8B-Instruct"
-model_kwargs = {"attn_implementation": "flash_attention_2"}
-pipe = pipeline("kv-press-text-generation", model=model, device=device, model_kwargs=model_kwargs)
-
-context = "A very long text you want to compress once and for all"
-question = "\nA question about the compressed context"  # optional
-
-press = ExpectedAttentionPress(compression_ratio=0.5)
-answer = pipe(context, question=question, press=press)["answer"]
-```
-
-In the snippet above, the compression is only applied on the context tokens so that you can evaluate the compression for different questions. Check the [Wikipedia notebook demo](notebooks/wikipedia_demo.ipynb) for a more detailed example (also available on Colab [here](https://colab.research.google.com/drive/1JNvaTKuuAHrl49dYB9-mdEH_y52Ib-NP)).
-
-> [!IMPORTANT]  
-> We focus on compression during the pre-filling phase as the KV cache becomes a bottleneck for long-context sequence (100k - 1M tokens) which are essentially long context prompts. This would typically apply to improving prompt caching systems.
-
-> [!NOTE]  
-> Use `model_kwargs={"attn_implementation":"flash_attention_2"}` to enable flash attention. To use the press `ObservedAttentionPress`, you need to specify `model_kwargs={"attn_implementation":"eager"}` as this press requires to materialize the attention weights
-
-## Contributing
-
-We welcome contributions! To add a new press, simply open an issue or submit a pull request. Check the [new_press.ipynb](notebooks/new_press.ipynb) notebook for a step-by-step guide.
-
 ## Available presses
 
 All current presses are training free and inherit from `BasePress` ([source](kvpress/presses/base_press.py)). 
