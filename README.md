@@ -51,4 +51,5 @@ For a detailed list of existing KV cache compression methods, check [Awesome-KV-
 - [ ] Integrated Latency Code from Dixi
 - [ ] Confirm SnapKV working
 - [ ] Add Debug Options For All Presses
+- [ ] Resolve install package ambiguities
 
