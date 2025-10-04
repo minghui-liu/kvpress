@@ -6,16 +6,16 @@ import json
 import logging
 import os
 from pathlib import Path
+import signal
 from typing import Optional
 
 import torch
 from datasets import load_dataset
 from fire import Fire
-
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from kvpress import BasePress, KeyRerotationPress, PerLayerCompressionPress
-
+from time import time
 from utils import default_extractor
 from gsm8k import gsm8k_formatter, gsm8k_scorer
 from folio import folio_formatter, folio_extractor, folio_scorer
@@ -116,6 +116,28 @@ def output_attentions(press: BasePress):
         return True
     return False
 
+def collect_cuda_memory_metrics():
+    stats = torch.cuda.memory_stats()
+    return {
+        "allocated_current": torch.cuda.memory_allocated(),
+        "allocated_peak": torch.cuda.max_memory_allocated(),
+        "reserved_current": torch.cuda.memory_reserved(),
+        "reserved_peak": torch.cuda.max_memory_reserved(),
+        "fragmentation": float(torch.cuda.memory_reserved() - torch.cuda.memory_allocated()) / max(1, torch.cuda.memory_reserved()),
+        "inactive_split_bytes": stats.get("inactive_split_bytes.all.current", 0),
+        "segments": stats.get("segment.all.current", 0),
+        "allocations": stats.get("allocation.all.current", 0),
+        "num_alloc_retries": stats.get("num_alloc_retries", 0),
+        "num_ooms": stats.get("num_ooms", 0),
+        "pinned_current": stats.get("active_bytes.pinned.current", 0),
+        "pinned_peak": stats.get("active_bytes.pinned.peak", 0),
+    }
+
+def reset_cuda_stats():
+    torch.cuda.synchronize()
+    torch.cuda.reset_peak_memory_stats()
+    torch.cuda.empty_cache()
+
 def evaluate(
     dataset: str,
     data_dir: Optional[str] = None,
@@ -131,9 +153,11 @@ def evaluate(
     max_new_tokens: Optional[int] = 2048,
     max_context_length: Optional[int] = None,
     do_sampling: bool = True,
-    skip_existing: bool = True,
+    skip_existing: bool = False,
     compression_ratio: float = 0.1,
     key_channel_compression_ratio: float = 0.5,
+    debug: bool = False,
+    latency: bool = False,
 ):
     """
     Evaluate a model on a dataset using a press and save the results
@@ -199,6 +223,8 @@ def evaluate(
         save_filename = save_filename.with_name(save_filename.stem + f"__max_context{max_context_length}" + save_filename.suffix)
     if do_sampling:
         save_filename = save_filename.with_name(save_filename.stem + "__sampling" + save_filename.suffix)
+    # Always include the random seed in filenames
+    save_filename = save_filename.with_name(save_filename.stem + f"__seed{random_seed}" + save_filename.suffix)
     score_filename = save_dir / (save_filename.stem + "_score.json")
 
     if skip_existing and score_filename.exists():
@@ -226,6 +252,16 @@ def evaluate(
         # Set the cache budget for the press
         press.cache_budget = cache_budget
 
+        # Forward debug/latency flags to the press
+        press.debug = debug
+        press.latency = latency
+
+        # Base CSV path for attention-loss/debug rows under results/csvs
+        csv_dir = save_dir / "csvs"
+        csv_dir.mkdir(exist_ok=True)
+        base_csv_path = csv_dir / save_filename.with_suffix(".csv").name
+        press.csv_path = str(base_csv_path)
+
         # Initialize pipeline with the correct attention implementation
         model_kwargs = {"torch_dtype": "auto"}
         if isinstance(press, H2OPress):
@@ -250,42 +286,116 @@ def evaluate(
 
         # Run generation on each context of the dataset
         save_objs = []
-        for i, example in tqdm(enumerate(ds), total=len(ds)):
+        pbar = tqdm(total=len(ds), bar_format="{l_bar}{bar}{r_bar}")
+        pbar.set_postfix({"dec": 0}, refresh=True)
+
+        # Graceful early-exit handler to persist partial results under results/saved
+        def _dump_partial_results():
+            try:
+                if not save_objs:
+                    return
+                saved_dir = save_dir / "saved"
+                saved_dir.mkdir(exist_ok=True)
+                num_done = len(save_objs)
+                partial_path = saved_dir / (save_filename.stem + f"__partial_n{num_done}.jsonl")
+                with open(str(partial_path), "w") as f_:
+                    for obj in save_objs:
+                        f_.write(json.dumps(obj) + "\n")
+                print(f"[EARLY-SAVE] Partial results saved to {partial_path}")
+            except Exception as _:
+                pass
+
+        def _sig_handler(signum, frame):  # noqa: ARG001
+            try:
+                _dump_partial_results()
+            finally:
+                try:
+                    pbar.close()
+                except Exception:
+                    pass
+                os._exit(1)
+
+        signal.signal(signal.SIGINT, _sig_handler)
+        signal.signal(signal.SIGTERM, _sig_handler)
+
+        for i, example in enumerate(ds):
+            # Differentiate CSV per-sample
+            press.csv_path = str(base_csv_path.with_name(base_csv_path.stem + f"__sample{i}" + base_csv_path.suffix))
+            # Overwrite per-sample CSV if it already exists (one CSV per run)
+            try:
+                if os.path.exists(press.csv_path):
+                    os.remove(press.csv_path)
+            except Exception:
+                pass
             input_text, gt_answer_text = formatter(example)
             inputs = tokenizer(input_text, return_tensors="pt", truncation=True).to(device)
             if max_context_length is not None:
                 inputs = {k: v[:, :max_context_length] for k, v in inputs.items()}
             if max_new_tokens is None:
                 max_new_tokens = 16 * 1024 - inputs["input_ids"].shape[1] # use 16k for max length for now
+            
+            if latency:
+                reset_cuda_stats()
+                if press is not None:
+                    press.reset_timing()
+                start = time()
+
+            # Wire a progress callback from the press to update the tqdm postfix
+            # Ensure per-token updates and enable progress reporting
+            setattr(press, "progress_print_every", 1)
+            setattr(press, "progress_enabled", True)
+
+            def _progress_update(prefill_tokens: int, decoding_tokens: int, phase: str, label: str):
+                try:
+                    pbar.set_postfix({"dec": decoding_tokens}, refresh=True)
+                    # Do not advance pbar here; it's the sample-level bar
+                except Exception:
+                    pass
+            setattr(press, "progress_update", _progress_update)
 
             # Run generation
-            if do_sampling:
-                with press(model) if press is not None else contextlib.nullcontext():
-                    outputs = model.generate(
-                        inputs["input_ids"],
-                        attention_mask=inputs["attention_mask"],
-                        max_new_tokens=max_new_tokens,
-                        do_sample=True,
-                        top_p=0.9,
-                        temperature=0.7,
-                        repetition_penalty=1.2,
-                        use_cache=True,
-                        output_attentions=output_attentions(press),
-                    )
-            else:
-                with press(model) if press is not None else contextlib.nullcontext():
-                    outputs = model.generate(
-                        inputs["input_ids"],
-                        attention_mask=inputs["attention_mask"],
-                        max_new_tokens=max_new_tokens,
-                        do_sample=False,
-                        use_cache=True,
-                        output_attentions=output_attentions(press),
-                    )
+            try:
+                if do_sampling:
+                    with press(model) if press is not None else contextlib.nullcontext():
+                        outputs = model.generate(
+                            inputs["input_ids"],
+                            attention_mask=inputs["attention_mask"],
+                            max_new_tokens=max_new_tokens,
+                            do_sample=True,
+                            top_p=0.9,
+                            temperature=0.7,
+                            repetition_penalty=1.2,
+                            use_cache=True,
+                            output_attentions=output_attentions(press),
+                        )
+                else:
+                    with press(model) if press is not None else contextlib.nullcontext():
+                        outputs = model.generate(
+                            inputs["input_ids"],
+                            attention_mask=inputs["attention_mask"],
+                            max_new_tokens=max_new_tokens,
+                            do_sample=False,
+                            use_cache=True,
+                            output_attentions=output_attentions(press),
+                        )
+            except KeyboardInterrupt:
+                _dump_partial_results()
+                pbar.close()
+                return
 
             pred_start = inputs["input_ids"].shape[1]
             response = tokenizer.decode(outputs[0][pred_start:], skip_special_tokens=True)
             model_answer = extractor(response)
+
+            if latency:
+                torch.cuda.synchronize()
+                stats = collect_cuda_memory_metrics()
+                execution_time = time() - start
+                timing_metrics = press.get_timing_metrics() if press is not None else {}
+                # Prepare cold-cache for the next iteration (outside measured window)
+                reset_cuda_stats()
+
+
 
             # calculate the compression ratio
             input_token_count = inputs["input_ids"].shape[1]
@@ -310,8 +420,21 @@ def evaluate(
                     "compression_ratio": actual_compression,
                 }
             )
-            save_objs.append(save_obj)
 
+            if latency:
+                save_obj.update(timing_metrics)
+                save_obj.update(stats)
+                save_obj["execution_time"] = execution_time
+            
+            save_objs.append(save_obj)
+            # Advance the per-sample progress bar and reset decoding token postfix for next sample
+            try:
+                pbar.update(1)
+                pbar.set_postfix({"dec": 0}, refresh=True)
+            except Exception:
+                pass
+
+        pbar.close()
         with open(str(save_filename), "w") as f:
             for obj in save_objs:
                 f.write(json.dumps(obj) + "\n")
@@ -343,6 +466,29 @@ def evaluate(
     metrics["max_new_tokens"] = max_new_tokens
     metrics["max_context_length"] = max_context_length
     metrics["random_seed"] = random_seed
+
+    if latency and len(save_obj) > 0:
+        # Aggregate latency metrics across samples
+        exec_times = [o.get("execution_time") for o in save_obj if o.get("execution_time") is not None]
+        prefill_times = [o.get("prefill_time") for o in save_obj if o.get("prefill_time") is not None]
+        decoding_times = [o.get("decoding_time") for o in save_obj if o.get("decoding_time") is not None]
+        press_tps = [o.get("output_tokens_per_second") for o in save_obj if o.get("output_tokens_per_second") is not None]
+        end_to_end_tps = []
+        for o in save_obj:
+            if o.get("execution_time") is not None and o.get("output_token_count") is not None and o["execution_time"] > 0:
+                end_to_end_tps.append(o["output_token_count"] / o["execution_time"])
+
+        def _avg(vals):
+            vals = [v for v in vals if v is not None]
+            return float(sum(vals) / len(vals)) if vals else None
+
+        metrics.update({
+            "avg_execution_time": _avg(exec_times),
+            "avg_prefill_time": _avg(prefill_times),
+            "avg_decoding_time": _avg(decoding_times),
+            "avg_press_tokens_per_second": _avg(press_tps),
+            "avg_end_to_end_tokens_per_second": _avg(end_to_end_tps),
+        })
 
     with open(str(score_filename), "w") as f:
         json.dump(metrics, f)

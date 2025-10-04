@@ -99,6 +99,8 @@ def evaluate(
     max_context_length: Optional[int] = None,
     compress_questions: bool = False,
     key_channel_compression_ratio: float = 0.5,
+    debug: bool = False,
+    latency: bool = False,
 ):
     """
     Evaluate a model on a dataset using a press and save the results
@@ -178,6 +180,10 @@ def evaluate(
         )
     else:
         press.compression_ratio = compression_ratio  # type:ignore[attr-defined]
+
+    # Forward debug/latency flags to the press
+    press.debug = debug
+    press.latency = latency
 
     # Initialize pipeline with the correct attention implementation
     model_kwargs = {"torch_dtype": "auto"}

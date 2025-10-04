@@ -9,9 +9,10 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 from transformers.models.llama.modeling_llama import repeat_kv, rotate_half
-
+import time
 from kvpress.presses.scorer_press import ScorerPress
 
+GLOBAL_ATTN_WEIGHTS = None
 
 @dataclass
 class RKVPress(ScorerPress):
@@ -24,12 +25,13 @@ class RKVPress(ScorerPress):
     # compression_ratio: float = 0.0
     window_size: int = 8 # number of observation tokens always kept in the cache
     kernel_size: int = 5
+    prune_step: int = 0
 
     def __post_init__(self):
         super().__post_init__()
         self.accumulated_tokens = 0  # Initialize accumulated tokens for compression interval
         self.acc_hidden_states = torch.zeros(
-            (1, self.compress_interval, 4096), dtype=torch.bfloat16, device="cuda"
+            (1, self.compress_interval, 3584), dtype=torch.bfloat16, device="cuda"
         )  # Initialize accumulated hidden states 
 
     @staticmethod
@@ -69,8 +71,58 @@ class RKVPress(ScorerPress):
         attn_weights = attn_weights[..., :-window_size]
 
         return attn_weights
+    
+    def compute_data(self, module: nn.Module, scores, indices):
+        """Compute attention pre/post sums per head without Python loops.
 
+        Logic preserved:
+        - pre = sum over all attention weights for the windowed queries and kept keys
+        - post = sum over attention weights to the pruned keys (complement of kept)
+        - per attention head within each KV group
+        """
+        aw = GLOBAL_ATTN_WEIGHTS
+        # Use float64 accumulator for numerical parity with previous code
+        aw = aw.to(torch.float64)
+        b = 0
+        num_attn_heads = aw.shape[1]
+        num_kv_heads = module.config.num_key_value_heads
+        heads_per_group = max(1, num_attn_heads // num_kv_heads)
+        # Recover kept token indices per KV head from expanded indices tensor
+        # indices shape is [B, num_kv_heads, topk, head_dim] after expand; take batch 0 and any head_dim column
+        kept_all = indices[0, :, :, 0].contiguous()  # [num_kv_heads, topk]
 
+        for kvh in range(num_kv_heads):
+            kept = kept_all[kvh]  # [topk]
+            # Build boolean mask over key dimension; note aw excludes the last window_size keys
+            # so clamp kept indices to valid range [0, K)
+            K = aw.shape[3]
+            valid = kept < K
+            kept_valid = kept[valid]
+            keep_mask = torch.zeros(K, dtype=torch.bool, device=aw.device)
+            if kept_valid.numel() > 0:
+                keep_mask[kept_valid] = True
+            drop_mask = ~keep_mask
+
+            start_h = kvh * heads_per_group
+            end_h = min((kvh + 1) * heads_per_group, num_attn_heads)
+            for h in range(start_h, end_h):
+                attn_h = aw[b, h]  # [Q, K_eff]
+                pre = attn_h.sum(dtype=torch.float64)
+                post = attn_h[:, drop_mask].sum(dtype=torch.float64)
+
+                self.prune_step = getattr(self, "prune_step", 0) + 1
+                self.write_data(
+                    csv_path=getattr(self, "csv_path", ""),
+                    prune_step=self.prune_step,
+                    layer_idx=getattr(module, "layer_idx", -1),
+                    head_idx=int(h),
+                    kv_len_pre=int(aw.shape[2]),
+                    attn_len=int(kept.numel()),
+                    diff_indices=int(max(0, aw.shape[2] - kept.numel())),
+                    attn_pre=pre,
+                    attn_post=post,
+                )
+            
     def score(
         self,
         module: nn.Module,
@@ -93,6 +145,9 @@ class RKVPress(ScorerPress):
             attn_weights = self.compute_window_attention(
                 module, hidden_states, keys, self.window_size, kwargs["position_embeddings"]
             )
+
+        global GLOBAL_ATTN_WEIGHTS
+        GLOBAL_ATTN_WEIGHTS = attn_weights.detach()
 
         scores = attn_weights.mean(dim=-2)   
         # Average per group (https://github.com/FasterDecoding/SnapKV/issues/22)
@@ -148,7 +203,10 @@ class RKVPress(ScorerPress):
         if self.accumulated_tokens < self.compress_interval:
             if getattr(module, "layer_idx", -1) == 0:
                 self.accumulated_tokens += 1
-            # # print(f"[DEBUG] hidden_states shape: {hidden_states.shape}, acc_hidden_states shape: {self.acc_hidden_states.shape}, accumulated_tokens: {self.accumulated_tokens}")
+            
+            if self.debug:
+                print(f"[DEBUG] (STEP) accumulated_tokens: {self.accumulated_tokens} / {self.compress_interval}")
+            
             self.acc_hidden_states[:, self.accumulated_tokens - 1, :] = hidden_states
             return keys, values
 
@@ -156,8 +214,11 @@ class RKVPress(ScorerPress):
         # scores = self.score(module, hidden_states, keys, values, attentions, False, kwargs)
         scores = self.score(module, self.acc_hidden_states[:, -self.window_size:, :], keys, values, attentions, False, kwargs)
         # Get indices of KV pairs with the lowest scores
+
         indices = scores.topk(self.cache_budget, dim=-1).indices
         indices = indices.unsqueeze(-1).expand(-1, -1, -1, module.head_dim)
+
+        self.compute_data(module, scores, indices)
 
         # Prune keys and values
         keys = keys.gather(2, indices).contiguous()
@@ -166,7 +227,11 @@ class RKVPress(ScorerPress):
         if getattr(module, "layer_idx", -1) == 0:
             self.accumulated_tokens = 0  # Reset after compression
             self.acc_hidden_states = torch.zeros(
-                (1, self.compress_interval, 4096), dtype=torch.bfloat16, device="cuda"
+                (1, self.compress_interval, 3584), dtype=torch.bfloat16, device="cuda"
             ) # Reset accumulated hidden states
+        
+        if self.debug:
+            print(f"[DEBUG] (PRUNED) keys length: {keys.shape[2]}")
+
         return keys, values
 

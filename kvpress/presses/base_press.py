@@ -3,10 +3,12 @@
 
 
 import logging
+import os
+import csv
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Generator
-
+from time import time
 import torch
 from torch import nn
 from transformers import (
@@ -27,6 +29,35 @@ class BasePress:
     Base class for all KV cache compression methods.
     The `forward_hook` method is called after the forward pass of an attention layer to update the cache.
     """
+
+    def __post_init__(self):
+        """Initialize timing tracking attributes"""
+        self.prefill_time: float = 0.0
+        self.decoding_time: float = 0.0
+        self.total_prefill_tokens: int = 0
+        self.total_decoding_tokens: int = 0
+
+    def reset_timing(self):
+        """Reset timing counters"""
+        self.prefill_time = 0.0
+        self.decoding_time = 0.0
+        self.total_prefill_tokens = 0
+        self.total_decoding_tokens = 0
+
+    def get_timing_metrics(self):
+        """Get timing metrics for performance analysis"""
+        total_time = self.prefill_time + self.decoding_time
+        output_tokens_per_second = self.total_decoding_tokens / self.decoding_time if self.decoding_time > 0 else 0.0
+        
+        return {
+            "prefill_time": self.prefill_time,
+            "decoding_time": self.decoding_time,
+            "total_time": total_time,
+            "total_prefill_tokens": self.total_prefill_tokens,
+            "total_decoding_tokens": self.total_decoding_tokens,
+            "output_tokens_per_second": output_tokens_per_second
+        }
+
     
     def compress_prefilling(
         self,
@@ -95,6 +126,64 @@ class BasePress:
         """
         raise NotImplementedError("compress method must be implemented in subclass")
 
+    def compute_data(self, module: nn.Module):
+        raise NotImplementedError("compress method must be implemented in subclass")
+    
+    def write_data(
+        self,
+        csv_path: str,
+        prune_step: int,
+        layer_idx: int,
+        head_idx: int,
+        kv_len_pre: int,
+        attn_len: int,
+        diff_indices: int,
+        attn_pre: float | None = None,
+        attn_post: float | None = None,
+        evicted_positions: str | None = None,
+    ) -> None:
+        """Append one row to the attention-loss CSV, writing header if needed.
+
+        Header columns:
+        prune_step, layer_idx, head_idx, kv_len_pre, attn_len, diff_indices, attn_pre, attn_post
+        """
+        if not csv_path:
+            csv_path = self.csv_path
+        os.makedirs(os.path.dirname(csv_path), exist_ok=True)
+        file_exists = os.path.exists(csv_path)
+        with open(csv_path, "a", newline="") as f:
+            writer = csv.writer(f)
+            if not file_exists:
+                writer.writerow([
+                    "prune_step",
+                    "layer_idx",
+                    "head_idx",
+                    "kv_len_pre",
+                    "attn_len",
+                    "diff_indices",
+                    "attn_pre",
+                    "attn_post",
+                    "evicted_positions",
+                ])
+            ap = f"{attn_pre:.6f}" if attn_pre is not None else ""
+            po = f"{attn_post:.6f}" if attn_post is not None else ""
+            row = [
+                prune_step,
+                layer_idx,
+                head_idx,
+                kv_len_pre,
+                attn_len,
+                diff_indices,
+                ap,
+                po,
+                evicted_positions if evicted_positions is not None else "",
+            ]
+            if self.debug:
+                debug_row = row[:-1]  # Exclude evicted_positions
+                print(f"[CSV] {debug_row}")
+            writer.writerow(row)
+
+
     
     def forward_hook(self, module: nn.Module, input: list[torch.Tensor], kwargs: dict, output: list):
         """
@@ -119,7 +208,6 @@ class BasePress:
             Modified output of the forward pass of the layer.
 
         """
-
         hidden_states = kwargs["hidden_states"]
         cache = kwargs["past_key_value"]
         q_len = hidden_states.shape[1]
@@ -133,11 +221,53 @@ class BasePress:
             keys = cache.key_cache[module.layer_idx]
             values = cache.value_cache[module.layer_idx]
 
+        if self.latency:
+            torch.cuda.synchronize()
+            start = time()
+
+        if self.debug:
+            print(f"[ATTN] layer_idx={getattr(module, 'layer_idx', -1)} kv_len={keys.shape[2]} prefill={is_prefilling}")
+
+
         if is_prefilling:
             keys, values = self.compress_prefilling(module, hidden_states, keys, values, output[1], kwargs)
         else:
             keys, values = self.compress_decoding(module, hidden_states, keys, values, output[1], kwargs)
 
+        
+        if self.latency:
+            torch.cuda.synchronize()
+            execution_time = time() - start
+
+            if is_prefilling:
+                self.prefill_time += execution_time
+                if getattr(module, "layer_idx", -1) == 0:
+                    self.total_prefill_tokens += q_len
+            else:
+                self.decoding_time += execution_time
+                if getattr(module, "layer_idx", -1) == 0:
+                    self.total_decoding_tokens += q_len
+
+        # Human-readable progress: report current prefill and decoding tokens (layer 0 only)
+        if getattr(module, "layer_idx", -1) == 0:
+            should_report = (
+                getattr(self, "debug", False)
+                or getattr(self, "latency", False)
+                or getattr(self, "progress_enabled", False)
+            )
+            if should_report:
+                label = getattr(self, "progress_label", "PROGRESS")
+                callback = getattr(self, "progress_update", None)
+                if is_prefilling:
+                    if callable(callback):
+                        callback(self.total_prefill_tokens, self.total_decoding_tokens, phase="prefill", label=label)
+                    else:
+                        print(f"[{label}] prefill_tokens={self.total_prefill_tokens} decoding_tokens={self.total_decoding_tokens}")
+                else:
+                    if callable(callback):
+                        callback(self.total_prefill_tokens, self.total_decoding_tokens, phase="decoding", label=label)
+                    else:
+                        print(f"[{label}] prefill_tokens={self.total_prefill_tokens} decoding_tokens={self.total_decoding_tokens}")
         if isinstance(cache, QuantizedCache):
             cache._quantized_key_cache[module.layer_idx] = cache._quantize(keys, axis=cache.axis_key)
             cache._quantized_value_cache[module.layer_idx] = cache._quantize(values, axis=cache.axis_value)
