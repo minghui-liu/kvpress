@@ -300,6 +300,9 @@ def evaluate(
 
         # Set the cache budget for the press
         press.cache_budget = cache_budget
+        # Force FullPress to use an unbounded cache (no pruning)
+        if isinstance(press, FullPress):
+            press.cache_budget = 0
 
         # Forward debug/latency flags to the press
         press.debug = debug

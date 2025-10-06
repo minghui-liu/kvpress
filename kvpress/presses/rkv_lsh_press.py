@@ -32,7 +32,7 @@ class RKVLSHPress(ScorerPress):
         super().__post_init__()
         self.accumulated_tokens = 0  # Initialize accumulated tokens for compression interval
         self.acc_hidden_states = torch.zeros(
-            (1, self.compress_interval, 5120), dtype=torch.bfloat16, device="cuda"
+            (1, self.compress_interval, 3584), dtype=torch.bfloat16, device="cuda"
         )  # Initialize accumulated hidden states
 
 
@@ -255,7 +255,7 @@ class RKVLSHPress(ScorerPress):
         if getattr(module, "layer_idx", -1) == 0:
             self.accumulated_tokens = 0  # Reset after compression
             self.acc_hidden_states = torch.zeros(
-                (1, self.compress_interval, 5120), dtype=torch.bfloat16, device="cuda"
+                (1, self.compress_interval, 3584), dtype=torch.bfloat16, device="cuda"
             )
 
         if self.debug:
