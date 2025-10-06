@@ -249,7 +249,7 @@ class BasePress:
                     self.total_decoding_tokens += q_len
 
         # Human-readable progress: report current prefill and decoding tokens (layer 0 only)
-        if getattr(module, "layer_idx", -1) == 0:
+        if getattr(module, "layer_idx", -1) == 0 and self.latency:
             should_report = (
                 getattr(self, "debug", False)
                 or getattr(self, "latency", False)

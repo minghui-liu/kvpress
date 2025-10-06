@@ -13,7 +13,7 @@ import torch
 from datasets import load_dataset
 from fire import Fire
 from tqdm import tqdm
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, StoppingCriteria, StoppingCriteriaList
 from kvpress import BasePress, KeyRerotationPress, PerLayerCompressionPress
 from time import time
 from utils import default_extractor
@@ -35,6 +35,7 @@ from kvpress import (
     StreamingLLMPress,
     FullPress,
     RKVPress,
+    RKVLSHPress,
     H2OPress,
 )
 
@@ -103,6 +104,7 @@ PRESS_DICT = {
     "random": RandomPress(),
     "streaming_llm": StreamingLLMPress(),
     "rkv": RKVPress(),
+    "rkv_lsh": RKVLSHPress(),
     "full": FullPress(),
 }
 
@@ -138,6 +140,52 @@ def reset_cuda_stats():
     torch.cuda.reset_peak_memory_stats()
     torch.cuda.empty_cache()
 
+
+class StopOnRepetition(StoppingCriteria):
+    def __init__(self, prompt_len: int, min_repeat: int = 8, ngram_min: int = 2, ngram_max: int = 15, window: int = 300, tokenizer=None):
+        super().__init__()
+        self.prompt_len = prompt_len
+        self.min_repeat = min_repeat
+        self.ngram_min = ngram_min
+        self.ngram_max = ngram_max
+        self.window = window
+        self.tokenizer = tokenizer
+
+    def __call__(self, input_ids, scores, **kwargs):  # noqa: D401, ARG002
+        try:
+            seq = input_ids[0].tolist()
+            gen_ids = seq[self.prompt_len:]
+            if len(gen_ids) < self.ngram_min * self.min_repeat:
+                return False
+            start_idx = max(0, len(gen_ids) - self.window)
+            tail = gen_ids[start_idx:]
+            # Detect any n-gram that repeats consecutively >= min_repeat times
+            for n in range(self.ngram_min, self.ngram_max + 1):
+                limit = len(tail) - n * self.min_repeat + 1
+                if limit <= 0:
+                    continue
+                for i in range(limit):
+                    seg = tail[i:i + n]
+                    repeated = True
+                    for r in range(1, self.min_repeat):
+                        a = i + r * n
+                        b = a + n
+                        if tail[a:b] != seg:
+                            repeated = False
+                            break
+                    if repeated:
+                        try:
+                            snippet = ""
+                            if self.tokenizer is not None:
+                                snippet = self.tokenizer.decode(seg, skip_special_tokens=True)
+                            print(f"[STOP] repetition detected: n={n} x{self.min_repeat} snippet='{snippet[:80]}'")
+                        except Exception:
+                            print(f"[STOP] repetition detected: n={n} x{self.min_repeat}")
+                        return True
+            return False
+        except Exception:
+            return False
+
 def evaluate(
     dataset: str,
     data_dir: Optional[str] = None,
@@ -152,12 +200,13 @@ def evaluate(
     random_seed: int = 42,
     max_new_tokens: Optional[int] = 2048,
     max_context_length: Optional[int] = None,
-    do_sampling: bool = True,
-    skip_existing: bool = False,
+    do_sampling: bool = False,
+    skip_existing: bool = True,
     compression_ratio: float = 0.1,
     key_channel_compression_ratio: float = 0.5,
     debug: bool = False,
     latency: bool = False,
+    resume: bool = False,
 ):
     """
     Evaluate a model on a dataset using a press and save the results
@@ -283,10 +332,50 @@ def evaluate(
         )
         tokenizer = AutoTokenizer.from_pretrained(model_name, device_map="auto", trust_remote_code=True)
         tokenizer.pad_token = tokenizer.eos_token
+        # Ensure the model has a valid pad_token_id configured
+        try:
+            if getattr(model.config, "pad_token_id", None) is None:
+                model.config.pad_token_id = tokenizer.pad_token_id
+        except Exception:
+            pass
 
         # Run generation on each context of the dataset
         save_objs = []
+
+        # If requested, continue from the latest partial results
+        start_index = 0
+        if resume:
+            try:
+                saved_dir = save_dir / "saved"
+                prefix = save_filename.stem + "__partial_n"
+                latest_n = -1
+                latest_path = None
+                if saved_dir.exists():
+                    for name in os.listdir(saved_dir):
+                        if name.startswith(prefix) and name.endswith(".jsonl"):
+                            try:
+                                n_str = name[len(prefix):-6]  # strip prefix and .jsonl
+                                n_val = int(n_str)
+                                if n_val > latest_n:
+                                    latest_n = n_val
+                                    latest_path = saved_dir / name
+                            except Exception:
+                                pass
+                if latest_path is not None and latest_n > 0:
+                    with open(str(latest_path), "r") as f_:
+                        save_objs = [json.loads(line) for line in f_.read().splitlines() if line]
+                    start_index = min(latest_n, len(ds))
+                    print(f"[RESUME] Resuming from partial results ({start_index} samples) at {latest_path}")
+            except Exception:
+                pass
+
         pbar = tqdm(total=len(ds), bar_format="{l_bar}{bar}{r_bar}")
+        if start_index > 0:
+            try:
+                pbar.n = start_index
+                pbar.refresh()
+            except Exception:
+                pass
         pbar.set_postfix({"dec": 0}, refresh=True)
 
         # Graceful early-exit handler to persist partial results under results/saved
@@ -319,6 +408,9 @@ def evaluate(
         signal.signal(signal.SIGTERM, _sig_handler)
 
         for i, example in enumerate(ds):
+            # Skip already processed samples when continuing
+            if i < start_index:
+                continue
             # Differentiate CSV per-sample
             press.csv_path = str(base_csv_path.with_name(base_csv_path.stem + f"__sample{i}" + base_csv_path.suffix))
             # Overwrite per-sample CSV if it already exists (one CSV per run)
@@ -355,6 +447,8 @@ def evaluate(
 
             # Run generation
             try:
+                pred_start = inputs["input_ids"].shape[1]
+                stopping = StoppingCriteriaList([StopOnRepetition(prompt_len=pred_start, min_repeat=5, ngram_min=2, ngram_max=10, window=200, tokenizer=tokenizer)])
                 if do_sampling:
                     with press(model) if press is not None else contextlib.nullcontext():
                         outputs = model.generate(
@@ -365,6 +459,9 @@ def evaluate(
                             top_p=0.9,
                             temperature=0.7,
                             repetition_penalty=1.2,
+                            pad_token_id=tokenizer.pad_token_id,
+                            eos_token_id=tokenizer.eos_token_id,
+                            stopping_criteria=stopping,
                             use_cache=True,
                             output_attentions=output_attentions(press),
                         )
@@ -375,6 +472,9 @@ def evaluate(
                             attention_mask=inputs["attention_mask"],
                             max_new_tokens=max_new_tokens,
                             do_sample=False,
+                            pad_token_id=tokenizer.pad_token_id,
+                            eos_token_id=tokenizer.eos_token_id,
+                            stopping_criteria=stopping,
                             use_cache=True,
                             output_attentions=output_attentions(press),
                         )
@@ -482,12 +582,46 @@ def evaluate(
             vals = [v for v in vals if v is not None]
             return float(sum(vals) / len(vals)) if vals else None
 
+        # Average token counters from press timing metrics (saved per-sample when latency=True)
+        total_prefill_tokens_list = [o.get("total_prefill_tokens") for o in save_obj if o.get("total_prefill_tokens") is not None]
+        total_decoding_tokens_list = [o.get("total_decoding_tokens") for o in save_obj if o.get("total_decoding_tokens") is not None]
+
+        # Average CUDA memory stats across samples
+        allocated_current_vals = [o.get("allocated_current") for o in save_obj if o.get("allocated_current") is not None]
+        allocated_peak_vals = [o.get("allocated_peak") for o in save_obj if o.get("allocated_peak") is not None]
+        reserved_current_vals = [o.get("reserved_current") for o in save_obj if o.get("reserved_current") is not None]
+        reserved_peak_vals = [o.get("reserved_peak") for o in save_obj if o.get("reserved_peak") is not None]
+        fragmentation_vals = [o.get("fragmentation") for o in save_obj if o.get("fragmentation") is not None]
+        inactive_split_bytes_vals = [o.get("inactive_split_bytes") for o in save_obj if o.get("inactive_split_bytes") is not None]
+        segments_vals = [o.get("segments") for o in save_obj if o.get("segments") is not None]
+        allocations_vals = [o.get("allocations") for o in save_obj if o.get("allocations") is not None]
+        num_alloc_retries_vals = [o.get("num_alloc_retries") for o in save_obj if o.get("num_alloc_retries") is not None]
+        num_ooms_vals = [o.get("num_ooms") for o in save_obj if o.get("num_ooms") is not None]
+        pinned_current_vals = [o.get("pinned_current") for o in save_obj if o.get("pinned_current") is not None]
+        pinned_peak_vals = [o.get("pinned_peak") for o in save_obj if o.get("pinned_peak") is not None]
+
         metrics.update({
             "avg_execution_time": _avg(exec_times),
             "avg_prefill_time": _avg(prefill_times),
             "avg_decoding_time": _avg(decoding_times),
             "avg_press_tokens_per_second": _avg(press_tps),
             "avg_end_to_end_tokens_per_second": _avg(end_to_end_tps),
+            # Token counter averages
+            "avg_total_prefill_tokens": _avg(total_prefill_tokens_list),
+            "avg_total_decoding_tokens": _avg(total_decoding_tokens_list),
+            # CUDA memory averages
+            "avg_allocated_current": _avg(allocated_current_vals),
+            "avg_allocated_peak": _avg(allocated_peak_vals),
+            "avg_reserved_current": _avg(reserved_current_vals),
+            "avg_reserved_peak": _avg(reserved_peak_vals),
+            "avg_fragmentation": _avg(fragmentation_vals),
+            "avg_inactive_split_bytes": _avg(inactive_split_bytes_vals),
+            "avg_segments": _avg(segments_vals),
+            "avg_allocations": _avg(allocations_vals),
+            "avg_num_alloc_retries": _avg(num_alloc_retries_vals),
+            "avg_num_ooms": _avg(num_ooms_vals),
+            "avg_pinned_current": _avg(pinned_current_vals),
+            "avg_pinned_peak": _avg(pinned_peak_vals),
         })
 
     with open(str(score_filename), "w") as f:
