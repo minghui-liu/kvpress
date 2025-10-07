@@ -3,9 +3,12 @@
 
 
 import logging
+import json
+import os
 from dataclasses import dataclass
 
 import torch
+import numpy as np
 from torch import nn
 
 from kvpress.presses.base_press import BasePress
@@ -27,6 +30,15 @@ class ScorerPress(BasePress):
 
     def __post_init__(self):
         assert 0 <= self.compression_ratio < 1, "Compression ratio must be between 0 and 1"
+        
+        # Initialize ranking data collection
+        self.ranking_data = []
+        self.save_dir = "ranking_analysis"
+        os.makedirs(self.save_dir, exist_ok=True)
+        
+        # Tokenizer for decoding tokens (will be set during inference)
+        self.tokenizer = None
+        self.input_tokens = None
 
     def score(
         self,
@@ -43,6 +55,97 @@ class ScorerPress(BasePress):
         The KV pairs with lowest scores will be pruned in the `compress` method.
         """
         raise NotImplementedError
+
+    def set_tokenizer_and_tokens(self, tokenizer, input_tokens):
+        """Set tokenizer and input tokens for text decoding."""
+        self.tokenizer = tokenizer
+        self.input_tokens = input_tokens
+
+    def save_ranking_data(self, scores, indices, kv_len, is_prefill):
+        """Save ranking data for analysis."""
+        try:
+            # Convert tensors to numpy
+            scores_np = scores.cpu().numpy().flatten()
+            indices_np = indices.cpu().numpy().flatten()
+            
+            # Get rankings (higher score = higher rank)
+            rankings = np.argsort(scores_np)[::-1]  # Sort in descending order
+            
+            # Get token text information if available
+            token_texts = []
+            top_10_tokens = []
+            bottom_10_tokens = []
+            
+            if self.tokenizer is not None and self.input_tokens is not None:
+                # Decode all tokens
+                for i in range(min(kv_len, len(self.input_tokens))):
+                    token_text = self.tokenizer.decode([self.input_tokens[i]], skip_special_tokens=True)
+                    token_texts.append({
+                        'index': i,
+                        'text': token_text,
+                        'score': scores_np[i] if i < len(scores_np) else 0.0
+                    })
+                
+                # Get top 10 tokens (highest scores)
+                top_10_indices = rankings[:10]
+                for idx in top_10_indices:
+                    if idx < len(self.input_tokens):
+                        token_text = self.tokenizer.decode([self.input_tokens[idx]], skip_special_tokens=True)
+                        top_10_tokens.append({
+                            'index': int(idx),
+                            'text': token_text,
+                            'score': float(scores_np[idx])
+                        })
+                
+                # Get bottom 10 tokens (lowest scores)
+                bottom_10_indices = rankings[-10:]
+                for idx in bottom_10_indices:
+                    if idx < len(self.input_tokens):
+                        token_text = self.tokenizer.decode([self.input_tokens[idx]], skip_special_tokens=True)
+                        bottom_10_tokens.append({
+                            'index': int(idx),
+                            'text': token_text,
+                            'score': float(scores_np[idx])
+                        })
+            
+            # Create ranking entry
+            ranking_entry = {
+                'scores': scores_np.tolist(),
+                'rankings': rankings.tolist(),
+                'selected_indices': indices_np.tolist(),
+                'sequence_length': kv_len,
+                'cache_budget': self.cache_budget,
+                'is_prefill': is_prefill,
+                'compression_ratio': self.compression_ratio,
+                'token_texts': token_texts,
+                'top_10_tokens': top_10_tokens,
+                'bottom_10_tokens': bottom_10_tokens
+            }
+            
+            # Add to ranking data
+            self.ranking_data.append(ranking_entry)
+            
+            # Save individual ranking data
+            ranking_file = os.path.join(self.save_dir, f"ranking_data_{len(self.ranking_data)}.json")
+            with open(ranking_file, 'w') as f:
+                json.dump(ranking_entry, f, indent=2)
+                
+        except Exception as e:
+            print(f"Error saving ranking data: {e}")
+    
+    def save_all_ranking_data(self, filename="all_ranking_data.json"):
+        """Save all collected ranking data to a single file."""
+        try:
+            output_file = os.path.join(self.save_dir, filename)
+            with open(output_file, 'w') as f:
+                json.dump(self.ranking_data, f, indent=2)
+            print(f"Saved {len(self.ranking_data)} ranking entries to {output_file}")
+        except Exception as e:
+            print(f"Error saving all ranking data: {e}")
+    
+    def reset_ranking_data(self):
+        """Reset collected ranking data."""
+        self.ranking_data = []
 
     def compress_prefilling(
         self,
@@ -65,6 +168,10 @@ class ScorerPress(BasePress):
         scores = self.score(module, hidden_states, keys, values, attentions, True, kwargs)
         # Get indices of KV pairs with the lowest scores
         indices = scores.topk(self.cache_budget, dim=-1).indices
+        
+        # Save ranking data
+        #self.save_ranking_data(scores, indices, q_len, True)
+        
         indices = indices.unsqueeze(-1).expand(-1, -1, -1, module.head_dim)
 
         # Prune keys and values
@@ -95,6 +202,9 @@ class ScorerPress(BasePress):
         # Get indices of KV pairs with the lowest scores
         indices = scores.topk(self.cache_budget, dim=-1).indices
         indices = indices.unsqueeze(-1).expand(-1, -1, -1, module.head_dim)
+
+        # Save ranking data
+        self.save_ranking_data(scores, indices, kv_len, False)
 
         # Prune keys and values
         keys = keys.gather(2, indices).contiguous()

@@ -3,9 +3,12 @@
 
 
 import math
+import json
+import os
 from dataclasses import dataclass
 
 import torch
+import numpy as np
 from torch import nn
 from torch.nn import functional as F
 from transformers.models.llama.modeling_llama import repeat_kv, rotate_half
@@ -33,7 +36,16 @@ class RKVLSHPress(ScorerPress):
         self.accumulated_tokens = 0  # Initialize accumulated tokens for compression interval
         self.acc_hidden_states = torch.zeros(
             (1, self.compress_interval, 4096), dtype=torch.bfloat16, device="cuda"
-        )  # Initialize accumulated hidden states 
+        )  # Initialize accumulated hidden states
+        
+        # Initialize ranking data collection
+        self.ranking_data = []
+        self.save_dir = "ranking_analysis"
+        os.makedirs(self.save_dir, exist_ok=True)
+        
+        # Tokenizer for decoding tokens (will be set during inference)
+        self.tokenizer = None
+        self.input_tokens = None 
 
     @staticmethod
     def compute_window_attention(module, hidden_states, keys, window_size, position_embeddings):
@@ -211,5 +223,103 @@ class RKVLSHPress(ScorerPress):
             (1, self.compress_interval, 4096), dtype=torch.bfloat16, device="cuda"
         ) # Reset accumulated hidden states
 
+        # Save ranking data
+        self.save_ranking_data(scores, indices, kv_len, False)
+
         return keys, values
+
+    def set_tokenizer_and_tokens(self, tokenizer, input_tokens):
+        """Set tokenizer and input tokens for text decoding."""
+        self.tokenizer = tokenizer
+        self.input_tokens = input_tokens
+
+    def save_ranking_data(self, scores, indices, kv_len, is_prefill):
+        """Save ranking data for analysis."""
+        try:
+            # Convert tensors to numpy (convert BFloat16 to float32 first)
+            scores_np = scores.cpu().float().numpy().flatten()
+            indices_np = indices.cpu().float().numpy().flatten()
+            
+            # Get rankings (higher score = higher rank)
+            rankings = np.argsort(scores_np)[::-1]  # Sort in descending order
+            
+            # Get token text information if available
+            token_texts = []
+            top_10_tokens = []
+            bottom_10_tokens = []
+            
+            if self.tokenizer is not None and self.input_tokens is not None:
+                # Decode all tokens
+                for i in range(min(kv_len, len(self.input_tokens))):
+                    token_text = self.tokenizer.decode([self.input_tokens[i]], skip_special_tokens=True)
+                    token_texts.append({
+                        'index': int(i),
+                        'text': str(token_text),
+                        'score': float(scores_np[i]) if i < len(scores_np) else 0.0
+                    })
+                
+                # Get top 10 tokens (highest scores)
+                top_10_indices = rankings[:10]
+                for idx in top_10_indices:
+                    if idx < len(self.input_tokens):
+                        token_text = self.tokenizer.decode([self.input_tokens[idx]], skip_special_tokens=True)
+                        top_10_tokens.append({
+                            'index': int(idx),
+                            'text': str(token_text),
+                            'score': float(scores_np[idx])
+                        })
+                
+                # Get bottom 10 tokens (lowest scores)
+                bottom_10_indices = rankings[-10:]
+                for idx in bottom_10_indices:
+                    if idx < len(self.input_tokens):
+                        token_text = self.tokenizer.decode([self.input_tokens[idx]], skip_special_tokens=True)
+                        bottom_10_tokens.append({
+                            'index': int(idx),
+                            'text': str(token_text),
+                            'score': float(scores_np[idx])
+                        })
+            
+            # Create ranking entry
+            ranking_entry = {
+                'scores': scores_np.astype(float).tolist(),
+                'rankings': rankings.astype(int).tolist(),
+                'selected_indices': indices_np.astype(int).tolist(),
+                'sequence_length': int(kv_len),
+                'cache_budget': int(self.cache_budget),
+                'is_prefill': bool(is_prefill),
+                'compression_ratio': float(self.compression_ratio),
+                'token_texts': token_texts,
+                'top_10_tokens': top_10_tokens,
+                'bottom_10_tokens': bottom_10_tokens
+            }
+            
+            # Add to ranking data
+            self.ranking_data.append(ranking_entry)
+            
+            # Save individual ranking data
+            class_name = self.__class__.__name__.lower()
+            ranking_file = os.path.join(self.save_dir, f"ranking_data_{class_name}_budget{self.cache_budget}.json")
+            with open(ranking_file, 'w') as f:
+                json.dump(ranking_entry, f, indent=2)
+                
+        except Exception as e:
+            print(f"Error saving ranking data: {e}")
+    
+    def save_all_ranking_data(self, filename=None):
+        """Save all collected ranking data to a single file."""
+        try:
+            if filename is None:
+                class_name = self.__class__.__name__.lower()
+                filename = f"all_ranking_data_{class_name}_budget{self.cache_budget}.json"
+            output_file = os.path.join(self.save_dir, filename)
+            with open(output_file, 'w') as f:
+                json.dump(self.ranking_data, f, indent=2)
+            print(f"All ranking data saved to: {output_file}")
+        except Exception as e:
+            print(f"Error saving all ranking data: {e}")
+    
+    def reset_ranking_data(self):
+        """Reset collected ranking data."""
+        self.ranking_data = []
 
