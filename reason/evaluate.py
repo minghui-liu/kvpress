@@ -191,7 +191,7 @@ def evaluate(
 
     save_dir = Path(__file__).parent / "results"
     save_dir.mkdir(exist_ok=True)
-    if press_name=="rkvlsh":
+    if "rkv" in press_name:
         save_filename = save_dir / (
             "__".join([dataset, data_dir if data_dir else "", model_name.replace("/", "--"), press_name, f"budget{cache_budget}",f"hash_bucket{n_hash_buckets}", f"max_new_tokens{max_new_tokens}",f"lam{int(lam*10)}"])
             + ".jsonl"
@@ -287,6 +287,9 @@ def evaluate(
             # Reset timing before generation
             if press is not None:
                 press.reset_timing()
+                # Set tokenizer and input tokens for ranking data collection
+                if hasattr(press, 'set_tokenizer_and_tokens'):
+                    press.set_tokenizer_and_tokens(tokenizer, inputs["input_ids"][0])
 
             # Run generation
             if do_sampling:
@@ -357,6 +360,10 @@ def evaluate(
             # Add timing metrics to save_obj
             save_obj.update(timing_metrics)
             save_objs.append(save_obj)
+            
+            # Save ranking data if press has ranking collection
+            if press is not None and hasattr(press, 'save_all_ranking_data'):
+                press.save_all_ranking_data()
 
         with open(str(save_filename), "w") as f:
             for obj in save_objs:

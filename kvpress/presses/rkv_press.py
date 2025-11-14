@@ -24,16 +24,12 @@ class RKVPress(ScorerPress):
     # compression_ratio: float = 0.0
     window_size: int = 8 # number of observation tokens always kept in the cache
     kernel_size: int = 5
-    n_hash_buckets: int=6
-    cos_hamming_distance_bucket: torch.Tensor=None
-    lam: float = 0.1
 
     def __post_init__(self):
         super().__post_init__()
         self.accumulated_tokens = 0  # Initialize accumulated tokens for compression interval
-        self.acc_hidden_states = torch.zeros(
-            (1, self.compress_interval, 4096), dtype=torch.bfloat16, device="cuda"
-        )  # Initialize accumulated hidden states 
+        self.hidden_size = None  # Will be set based on model type
+        self.acc_hidden_states = None  # Will be initialized when hidden_size is known 
 
     @staticmethod
     def compute_window_attention(module, hidden_states, keys, window_size, position_embeddings):
@@ -107,67 +103,51 @@ class RKVPress(ScorerPress):
         keys_norm = keys.norm(dim=-1, keepdim=True) + eps
         keys = keys / keys_norm
 
-        ### Original Algorithm: directly using the cosine similarity
-        # # compute the cosine similarity between keys
-        # keys_flat = keys.view(bsz, num_key_value_heads, -1, keys.shape[-1])
-        # keys_flat = keys_flat[:, :, : -self.window_size, :]  # Exclude the last window_size keys
-        # keys_similarity = torch.einsum("bhqd,bhkd->bhqk", keys_flat, keys_flat)
-        # # zero out the diagonal (self-similarity)
-        # mask = torch.eye(keys_similarity.shape[-1], device=keys_similarity.device).unsqueeze(0).unsqueeze(0)
-        # keys_similarity = keys_similarity * (1 - mask)
-
-        # redundency = keys_similarity.mean(dim=-1)  # Average over the key dimension
-        # redundency = F.softmax(redundency, dim=-1, dtype=torch.float32).to(scores.dtype)
- 
-
-        ### Modified Algorithm: implement LSH over that
+        # Original Algorithm: directly using the cosine similarity
+        # compute the cosine similarity between keys
         keys_flat = keys.view(bsz, num_key_value_heads, -1, keys.shape[-1])
         keys_flat = keys_flat[:, :, : -self.window_size, :]  # Exclude the last window_size keys
+        keys_similarity = torch.einsum("bhqd,bhkd->bhqk", keys_flat, keys_flat)
+        # zero out the diagonal (self-similarity)
+        mask = torch.eye(keys_similarity.shape[-1], device=keys_similarity.device).unsqueeze(0).unsqueeze(0)
+        keys_similarity = keys_similarity * (1 - mask)
 
-        if self.cos_hamming_distance_bucket is None:
-            buckets=torch.arange(2**self.n_hash_buckets)
-            a = buckets.view(-1, 1)  # [N, 1]
-            b = buckets.view(1, -1)  # [1, N]
-            xor_vals = a ^ b
-            hamming = torch.zeros_like(xor_vals, dtype=torch.int64)
-            temp = xor_vals.clone()
-            while True:
-                nonzero_mask = temp != 0
-                if not nonzero_mask.any():
-                    break
-                hamming += (temp & 1)
-                temp = temp >> 1
-            self.cos_hamming_distance_bucket=torch.cos(hamming/self.n_hash_buckets)
+        redundency = keys_similarity.mean(dim=-1)  # Average over the key dimension
+        redundency = F.softmax(redundency, dim=-1, dtype=torch.float32).to(scores.dtype)
 
-        # Construct LSH buckets
-        proj_matrix = torch.randn(keys_flat.shape[-1],self.n_hash_buckets, device=keys.device).to(keys_flat.dtype)  # Random projection matrix
-        # Dixi: I use random projection here has hash function for easiest implementation
-        hash_bits = torch.einsum("bhqd,dk->bhqk", keys_flat, proj_matrix)
-        hash_codes = (hash_bits > 0).int()
-        powers_of_two = 2 ** torch.arange(self.n_hash_buckets, device=keys.device, dtype=torch.bfloat16)
-        hash_codes_int = torch.sum(hash_codes * powers_of_two, dim=-1)  # [B, H, Q]
-
-        redundancy= torch.zeros_like(hash_codes_int, dtype=torch.bfloat16)  # [B, H, Q]
-        for b in range(bsz):
-            for h in range(num_key_value_heads):
-                # calculate count in each bucket
-                codes= hash_codes_int[b, h]
-                counts=torch.zeros(2**self.n_hash_buckets, device=keys_flat.device, dtype=torch.int32)
-                for bucket_number in torch.arange(2**self.n_hash_buckets):
-                    counts[bucket_number] = torch.sum(codes == bucket_number).item()
-                total_counts= counts.sum().item()
-                avg_cosine = torch.zeros(2**self.n_hash_buckets, device=hash_codes_int.device, dtype=torch.bfloat16)
-                for bucket_number in range(2**self.n_hash_buckets):
-                    weighted_sum = (counts * self.cos_hamming_distance_bucket.to(keys.device)[bucket_number]).sum()
-                    avg_cosine[bucket_number] = weighted_sum / total_counts if total_counts > 0 else 0.0
-                redundancy[b, h] = avg_cosine[codes.long()]
-        redundancy = F.softmax(redundancy, dim=-1, dtype=torch.bfloat16).to(scores.dtype)
-
-        scores = self.lam * scores + (1 - self.lam) * redundancy
+        scores = scores + redundency
         # Add back the observation window. Use max score to make sure the window is not pruned.
         scores = F.pad(scores, (0, self.window_size), value=scores.max().item())
         return scores
     
+
+    def _get_hidden_size(self, module, device="cuda"):
+        """Get hidden size based on model type."""
+        if self.hidden_size is None:
+            # Detect model type from config
+            model_type = getattr(module.config, 'model_type', '').lower()
+            model_name = getattr(module.config, 'name_or_path', '').lower()
+            
+            # Check for llama3 models
+            if 'llama' in model_type or 'llama' in model_name or 'nemotron' in model_name:
+                self.hidden_size = 4096
+            # Check for qwen-7b models
+            elif 'qwen' in model_type or 'qwen' in model_name:
+                if '7b' in model_name or '7b' in str(getattr(module.config, 'hidden_size', 0)):
+                    self.hidden_size = 3584
+                else:
+                    # Default for other Qwen models
+                    self.hidden_size = getattr(module.config, 'hidden_size', 4096)
+            else:
+                # Default: use config hidden_size or fallback to 4096
+                self.hidden_size = getattr(module.config, 'hidden_size', 4096)
+            
+            # Initialize acc_hidden_states with correct size
+            self.acc_hidden_states = torch.zeros(
+                (1, self.compress_interval, self.hidden_size), dtype=torch.bfloat16, device=device
+            )
+        
+        return self.hidden_size
 
     def compress_decoding(
         self,
@@ -183,6 +163,10 @@ class RKVPress(ScorerPress):
         kv_len = keys.shape[2]
         if self.cache_budget >= kv_len:
             return keys, values
+        
+        # Initialize hidden size if not set
+        device = hidden_states.device
+        self._get_hidden_size(module, device=device)
         
         if self.accumulated_tokens < self.compress_interval:
             if getattr(module, "layer_idx", -1) == 0:
@@ -204,7 +188,7 @@ class RKVPress(ScorerPress):
         # remove nan in keys and values
         keys = torch.nan_to_num(keys, nan=0.0)  
         values = torch.nan_to_num(values, nan=0.0)
-
+        
         if getattr(module, "layer_idx", -1) == 0:
             self.accumulated_tokens = 0  # Reset after compression
             self.acc_hidden_states = torch.zeros(

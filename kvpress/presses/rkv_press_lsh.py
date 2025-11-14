@@ -34,9 +34,8 @@ class RKVLSHPress(ScorerPress):
     def __post_init__(self):
         super().__post_init__()
         self.accumulated_tokens = 0  # Initialize accumulated tokens for compression interval
-        self.acc_hidden_states = torch.zeros(
-            (1, self.compress_interval, 4096), dtype=torch.bfloat16, device="cuda"
-        )  # Initialize accumulated hidden states
+        self.hidden_size = None  # Will be set based on model type
+        self.acc_hidden_states = None  # Will be initialized when hidden_size is known
         
         # Initialize ranking data collection
         self.ranking_data = []
