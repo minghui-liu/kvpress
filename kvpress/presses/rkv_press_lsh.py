@@ -181,6 +181,34 @@ class RKVLSHPress(ScorerPress):
         return scores
     
 
+    def _get_hidden_size(self, module, device="cuda"):
+        """Get hidden size based on model type."""
+        if self.hidden_size is None:
+            # Detect model type from config
+            model_type = getattr(module.config, 'model_type', '').lower()
+            model_name = getattr(module.config, 'name_or_path', '').lower()
+            
+            # Check for llama3 models
+            if 'llama' in model_type or 'llama' in model_name or 'nemotron' in model_name:
+                self.hidden_size = 4096
+            # Check for qwen-7b models
+            elif 'qwen' in model_type or 'qwen' in model_name:
+                if '7b' in model_name or '7b' in str(getattr(module.config, 'hidden_size', 0)):
+                    self.hidden_size = 3584
+                else:
+                    # Default for other Qwen models
+                    self.hidden_size = getattr(module.config, 'hidden_size', 4096)
+            else:
+                # Default: use config hidden_size or fallback to 4096
+                self.hidden_size = getattr(module.config, 'hidden_size', 4096)
+            
+            # Initialize acc_hidden_states with correct size
+            self.acc_hidden_states = torch.zeros(
+                (1, self.compress_interval, self.hidden_size), dtype=torch.bfloat16, device=device
+            )
+        
+        return self.hidden_size
+
     def compress_decoding(
         self,
         module: nn.Module,
@@ -195,6 +223,10 @@ class RKVLSHPress(ScorerPress):
         kv_len = keys.shape[2]
         if self.cache_budget >= kv_len:
             return keys, values
+        
+        # Initialize hidden size if not set
+        device = hidden_states.device
+        self._get_hidden_size(module, device=device)
         
         if self.accumulated_tokens < self.compress_interval:
             if getattr(module, "layer_idx", -1) == 0:
@@ -220,7 +252,7 @@ class RKVLSHPress(ScorerPress):
         if getattr(module, "layer_idx", -1) == 0:
             self.accumulated_tokens = 0  # Reset after compression
         self.acc_hidden_states = torch.zeros(
-            (1, self.compress_interval, 4096), dtype=torch.bfloat16, device="cuda"
+            (1, self.compress_interval, self.hidden_size), dtype=torch.bfloat16, device=device
         ) # Reset accumulated hidden states
 
         # Save ranking data

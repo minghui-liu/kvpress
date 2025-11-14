@@ -36,7 +36,7 @@ from kvpress import (
     StreamingLLMPress,
     FullPress,
     RKVPress,
-    RKVPress2,
+    RKVLSHPress,
     H2OPress,
 )
 
@@ -105,7 +105,7 @@ PRESS_DICT = {
     "random": RandomPress(),
     "streaming_llm": StreamingLLMPress(),
     "rkv": RKVPress(),
-    "rkv2": RKVPress2(),
+    "rkvlsh": RKVLSHPress(),
     "full": FullPress(),
 }
 
