@@ -19,6 +19,7 @@ from kvpress import BasePress, KeyRerotationPress, PerLayerCompressionPress
 
 from utils import default_extractor
 from gsm8k import gsm8k_formatter, gsm8k_scorer
+from keyword_tracker import extract_keywords, tokenize_keywords, track_token_retention
 from folio import folio_formatter, folio_extractor, folio_scorer
 from strategyqa import strategyqa_formatter, strategyqa_extractor, strategyqa_scorer
 from logiqa import logiqa_formatter, logiqa_scorer
@@ -220,6 +221,12 @@ def evaluate(
         logger.warning(f"Model responses already exist at {save_filename}")
         print(f"Model responses already exist. Loading responses from {save_filename} and evaluating metrics")
     else:
+        # Open file for incremental writing (append mode)
+        # Clear the file first if it exists
+        if save_filename.exists():
+            save_filename.unlink()
+        if save_filename.with_suffix('.step_tracking.json').exists():
+            save_filename.with_suffix('.step_tracking.json').unlink()
         # Load dataset
         ds = load_dataset(hf_name, data_dir=data_dir, split=data_split)
         if num_samples > 0:
@@ -265,7 +272,7 @@ def evaluate(
         tokenizer.pad_token = tokenizer.eos_token
 
         # Run generation on each context of the dataset
-        save_objs = []
+        # Results are written incrementally, so we don't need to store them in memory
         for i, example in tqdm(enumerate(ds), total=len(ds)):
             input_text, gt_answer_text = formatter(example)
             inputs = tokenizer(input_text, return_tensors="pt", truncation=True).to(device)
@@ -287,9 +294,19 @@ def evaluate(
             # Reset timing before generation
             if press is not None:
                 press.reset_timing()
-                # Set tokenizer and input tokens for ranking data collection
+                # Set tokenizer and input tokens for ranking data collection and per-step tracking
                 if hasattr(press, 'set_tokenizer_and_tokens'):
                     press.set_tokenizer_and_tokens(tokenizer, inputs["input_ids"][0])
+                # Also set tokenizer directly for per-step tracking
+                if hasattr(press, 'tokenizer'):
+                    press.tokenizer = tokenizer
+                if hasattr(press, 'input_tokens'):
+                    press.input_tokens = inputs["input_ids"][0]
+            
+            # Extract keywords from input text for tracking
+            keywords = extract_keywords(input_text)
+            keyword_token_ids = tokenize_keywords(keywords, tokenizer)
+            input_token_ids = inputs["input_ids"][0].tolist()
 
             # Run generation
             if do_sampling:
@@ -359,16 +376,84 @@ def evaluate(
             
             # Add timing metrics to save_obj
             save_obj.update(timing_metrics)
-            save_objs.append(save_obj)
             
             # Save ranking data if press has ranking collection
             if press is not None and hasattr(press, 'save_all_ranking_data'):
                 press.save_all_ranking_data()
-
-        with open(str(save_filename), "w") as f:
-            for obj in save_objs:
-                f.write(json.dumps(obj) + "\n")
-        print(f"Results saved to {save_filename}")
+            
+            # Track keyword retention if press tracks retention
+            keyword_retention = {}
+            if press is not None and hasattr(press, 'get_final_retained_indices'):
+                final_retained_indices = list(press.get_final_retained_indices())
+                if final_retained_indices:
+                    retention_results = track_token_retention(
+                        input_token_ids,
+                        final_retained_indices,
+                        keyword_token_ids
+                    )
+                    keyword_retention = {
+                        key_type: {
+                            'total_count': results['total_keyword_tokens'],
+                            'retained_count': results['retained_keyword_tokens'],
+                            'evicted_count': results['evicted_keyword_tokens'],
+                            'retention_rate': results['retention_rate']
+                        }
+                        for key_type, results in retention_results.items()
+                    }
+                else:
+                    # If no retention tracking, mark all as retained (full cache)
+                    keyword_retention = {
+                        key_type: {
+                            'total_count': len(token_set),
+                            'retained_count': len(token_set),
+                            'evicted_count': 0,
+                            'retention_rate': 1.0
+                        }
+                        for key_type, token_set in keyword_token_ids.items()
+                    }
+            else:
+                # For full press or no press, all tokens are retained
+                keyword_retention = {
+                    key_type: {
+                        'total_count': len(token_set),
+                        'retained_count': len(token_set),
+                        'evicted_count': 0,
+                        'retention_rate': 1.0
+                    }
+                    for key_type, token_set in keyword_token_ids.items()
+                }
+            
+            # Add keyword retention to save_obj
+            save_obj['keywords'] = keywords
+            save_obj['keyword_retention'] = keyword_retention
+            
+            # Collect per-step token tracking if available
+            if press is not None and hasattr(press, 'get_generation_steps'):
+                generation_steps = press.get_generation_steps()
+                if generation_steps:
+                    save_obj['generation_steps'] = generation_steps
+                    # Also save to a separate detailed JSON file
+                    step_tracking_file = save_filename.with_suffix('.step_tracking.json')
+                    step_data = {
+                        'question_index': i,
+                        'input_text': input_text,
+                        'question_id': example.get('question', '')[:100] if 'question' in example else f'question_{i}',
+                        'model_name': model_name,
+                        'press_name': press_name,
+                        'cache_budget': cache_budget,
+                        'generation_steps': generation_steps
+                    }
+                    # Append to file incrementally (one JSON object per line)
+                    with open(str(step_tracking_file), "a", encoding='utf-8') as step_f:
+                        step_f.write(json.dumps(step_data, indent=2) + "\n")
+            
+            # Write result incrementally after each example
+            with open(str(save_filename), "a", encoding='utf-8') as f:
+                f.write(json.dumps(save_obj) + "\n")
+            
+            print(f"✅ [{i+1}/{len(ds)}] Saved result for question {i+1} to {save_filename.name}")
+        
+        print(f"\n✅ All results saved to {save_filename}")
     # end of the if save_filename.exists()
 
     # load the results and evaluate the metrics

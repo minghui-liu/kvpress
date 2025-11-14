@@ -102,6 +102,13 @@ class BasePress:
         self.decoding_time: float = 0.0
         self.total_prefill_tokens: int = 0
         self.total_decoding_tokens: int = 0
+        # Keyword tracking
+        self.retained_token_indices: list = []  # List of sets of retained indices per compression step
+        self.all_token_indices: list = []  # List of all token indices before compression
+        
+        # Per-step token tracking during generation
+        self.generation_steps: list = []  # List of dicts with step info: {step, all_tokens, retained_tokens, evicted_tokens}
+        self.current_generation_step: int = 0
 
     def reset_timing(self):
         """Reset timing counters"""
@@ -109,6 +116,69 @@ class BasePress:
         self.decoding_time = 0.0
         self.total_prefill_tokens = 0
         self.total_decoding_tokens = 0
+        # Reset keyword tracking
+        self.retained_token_indices = []
+        self.all_token_indices = []
+        # Reset per-step tracking
+        self.generation_steps = []
+        self.current_generation_step = 0
+    
+    def track_retention(self, all_indices: list, retained_indices: list):
+        """Track which tokens were retained in the cache"""
+        self.all_token_indices.append(all_indices.copy())
+        self.retained_token_indices.append(retained_indices.copy())
+    
+    def get_final_retained_indices(self) -> set:
+        """Get the final set of retained token indices after all compressions"""
+        if not self.retained_token_indices:
+            return set()
+        # Return the intersection of all retained indices (tokens that survived all compressions)
+        final = set(self.retained_token_indices[0])
+        for retained in self.retained_token_indices[1:]:
+            final = final & set(retained)
+        return final
+    
+    def track_generation_step(self, all_token_ids: list, retained_token_ids: list, tokenizer=None):
+        """
+        Track token retention/eviction at each generation step.
+        
+        Parameters
+        ----------
+        all_token_ids : list
+            All token IDs in the sequence at this step
+        retained_token_ids : list
+            Token IDs that were retained in the KV cache
+        tokenizer : optional
+            Tokenizer to decode tokens to text
+        """
+        retained_set = set(retained_token_ids)
+        evicted_token_ids = [tid for tid in all_token_ids if tid not in retained_set]
+        
+        step_info = {
+            'step': self.current_generation_step,
+            'all_tokens': all_token_ids.copy(),
+            'retained_tokens': retained_token_ids.copy(),
+            'evicted_tokens': evicted_token_ids.copy()
+        }
+        
+        # Decode tokens to text if tokenizer is available
+        if tokenizer is not None:
+            try:
+                step_info['all_tokens_text'] = [tokenizer.decode([tid], skip_special_tokens=True) if isinstance(tid, int) else str(tid) for tid in all_token_ids]
+                step_info['retained_tokens_text'] = [tokenizer.decode([tid], skip_special_tokens=True) if isinstance(tid, int) else str(tid) for tid in retained_token_ids]
+                step_info['evicted_tokens_text'] = [tokenizer.decode([tid], skip_special_tokens=True) if isinstance(tid, int) else str(tid) for tid in evicted_token_ids]
+            except Exception as e:
+                # If decoding fails, just use token IDs as strings
+                step_info['all_tokens_text'] = [str(tid) for tid in all_token_ids]
+                step_info['retained_tokens_text'] = [str(tid) for tid in retained_token_ids]
+                step_info['evicted_tokens_text'] = [str(tid) for tid in evicted_token_ids]
+        
+        self.generation_steps.append(step_info)
+        self.current_generation_step += 1
+    
+    def get_generation_steps(self) -> list:
+        """Get all tracked generation steps"""
+        return self.generation_steps.copy()
 
     def get_timing_metrics(self):
         """Get timing metrics for performance analysis"""
