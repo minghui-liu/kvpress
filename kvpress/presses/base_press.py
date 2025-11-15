@@ -355,12 +355,10 @@ class BasePress:
         start=time()
 
         if is_prefilling:
-            print(f"Prefilling {q_len} tokens", flush=True)
             # Track prefilling step before compression
             self._track_prefilling_step(module, keys)
             keys, values = self.compress_prefilling(module, hidden_states, keys, values, output[1], kwargs)
         else:
-            print(f"Decoding {q_len} tokens", flush=True)
             # Track decoding step at layer 0 (once per token generation)
             layer_idx = getattr(module, "layer_idx", 0)
             if layer_idx == 0:
