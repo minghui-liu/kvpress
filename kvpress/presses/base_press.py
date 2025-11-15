@@ -405,7 +405,11 @@ class BasePress:
             logger.warning(f"Model {type(model)} not tested")
 
         hooks = []
-        for layer in model.model.layers:
-            layer.self_attn.rotary_emb = model.model.rotary_emb
-            layer.self_attn.register_forward_hook(self.forward_hook, with_kwargs=True)
-        yield
+        try:
+            for layer in model.model.layers:
+                layer.self_attn.rotary_emb = model.model.rotary_emb
+                hooks.append(layer.self_attn.register_forward_hook(self.forward_hook, with_kwargs=True))
+            yield
+        finally:
+            for forward_hook in hooks:
+                forward_hook.remove()
