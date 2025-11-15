@@ -387,8 +387,9 @@ class BasePress:
             cache.value_cache[module.layer_idx] = torch.zeros(0, dtype=keys.dtype, device=keys.device)
             cache._seen_tokens = keys.shape[2]
         else:
-            cache.key_cache[module.layer_idx] = keys
-            cache.value_cache[module.layer_idx] = values
+            layer = cache.layers[module.layer_idx]
+            layer.keys = keys
+            layer.values = values
 
         return output
 
