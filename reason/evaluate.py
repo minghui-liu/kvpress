@@ -253,7 +253,7 @@ def evaluate(
 
 
         # Initialize pipeline with the correct attention implementation
-        model_kwargs = {"torch_dtype": "auto"}
+        model_kwargs = {"dtype": "auto"}
         if isinstance(press, H2OPress):
             model_kwargs["attn_implementation"] = "eager"
         else:
@@ -435,6 +435,7 @@ def evaluate(
             save_obj['keywords'] = keywords
             save_obj['keyword_retention'] = keyword_retention
             
+            print(f"press: {press}", hasattr(press, 'get_generation_steps'))
             # Collect per-step token tracking if available
             if press is not None and hasattr(press, 'get_generation_steps'):
                 generation_steps = press.get_generation_steps()

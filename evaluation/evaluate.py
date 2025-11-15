@@ -180,7 +180,7 @@ def evaluate(
         press.compression_ratio = compression_ratio  # type:ignore[attr-defined]
 
     # Initialize pipeline with the correct attention implementation
-    model_kwargs = {"torch_dtype": "auto"}
+    model_kwargs = {"dtype": "auto"}
     if isinstance(press, ObservedAttentionPress):
         model_kwargs["attn_implementation"] = "eager"
     else:

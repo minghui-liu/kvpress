@@ -51,7 +51,7 @@ def kv_press_llama3_1_flash_attn_pipeline():
         "kv-press-text-generation",
         model=ckpt,
         device=device,
-        torch_dtype="auto",
+        dtype="auto",
         model_kwargs={"attn_implementation": attn_implementation},
     )
     return pipe
