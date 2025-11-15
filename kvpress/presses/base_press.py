@@ -334,55 +334,18 @@ class BasePress:
             Modified output of the forward pass of the layer.
 
         """
-        import sys
-        sys.stdout.flush()
-
-        hidden_states = kwargs.get("hidden_states")
-        if hidden_states is None:
-            # If hidden_states is not in kwargs, this might be a different hook signature
-            # Try to get from input
-            if input and len(input) > 0:
-                hidden_states = input[0]
-            else:
-                # Can't proceed without hidden_states
-                print("DEBUG: No hidden_states, returning early", flush=True)
-                return output
-        
-        cache = kwargs.get("past_key_value")
-        if cache is None:
-            # If past_key_value is not in kwargs, the cache might not be initialized yet
-            # This can happen during the very first forward pass
-            # Return output without compression
-            print("DEBUG: No cache, returning early", flush=True)
-            return output
-        
+        hidden_states = kwargs["hidden_states"]
+        cache = kwargs["past_key_value"]
         q_len = hidden_states.shape[1]
 
-        # Check if cache_position exists
-        cache_position = kwargs.get("cache_position")
-        if cache_position is not None:
-            is_prefilling = cache_position[-1] <= q_len
-        else:
-            # If cache_position is not available, try to infer from cache state
-            # During prefill, cache should be empty or growing
-            if isinstance(cache, QuantizedCache):
-                cache_len = cache._seen_tokens if hasattr(cache, '_seen_tokens') else 0
-            else:
-                cache_len = cache.get_seq_length() if hasattr(cache, 'get_seq_length') else 0
-            is_prefilling = cache_len < q_len
+        is_prefilling = kwargs["cache_position"][-1] <= q_len
 
-        # Get keys and values from cache
-        try:
-            if isinstance(cache, QuantizedCache):
-                keys = cache._dequantize(cache._quantized_key_cache[module.layer_idx])
-                values = cache._dequantize(cache._quantized_value_cache[module.layer_idx])
-            else:
-                keys = cache.key_cache[module.layer_idx]
-                values = cache.value_cache[module.layer_idx]
-        except (KeyError, IndexError, AttributeError) as e:
-            # Cache might not be properly initialized for this layer yet
-            logger.warning(f"Could not access cache for layer {module.layer_idx}: {e}")
-            return output
+        if isinstance(cache, QuantizedCache):
+            keys = cache._dequantize(cache._quantized_key_cache[module.layer_idx])
+            values = cache._dequantize(cache._quantized_value_cache[module.layer_idx])
+        else:
+            keys = cache.key_cache[module.layer_idx]
+            values = cache.value_cache[module.layer_idx]
 
         torch.cuda.synchronize()
         torch.cuda.empty_cache()
