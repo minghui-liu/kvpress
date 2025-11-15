@@ -334,6 +334,8 @@ class BasePress:
             Modified output of the forward pass of the layer.
 
         """
+        import sys
+        sys.stdout.flush()
 
         hidden_states = kwargs.get("hidden_states")
         if hidden_states is None:
@@ -343,6 +345,7 @@ class BasePress:
                 hidden_states = input[0]
             else:
                 # Can't proceed without hidden_states
+                print("DEBUG: No hidden_states, returning early", flush=True)
                 return output
         
         cache = kwargs.get("past_key_value")
@@ -350,6 +353,7 @@ class BasePress:
             # If past_key_value is not in kwargs, the cache might not be initialized yet
             # This can happen during the very first forward pass
             # Return output without compression
+            print("DEBUG: No cache, returning early", flush=True)
             return output
         
         q_len = hidden_states.shape[1]
@@ -384,14 +388,13 @@ class BasePress:
         torch.cuda.empty_cache()
         start=time()
 
-
         if is_prefilling:
-            print(f"Prefilling {q_len} tokens")
+            print(f"Prefilling {q_len} tokens", flush=True)
             # Track prefilling step before compression
             self._track_prefilling_step(module, keys)
             keys, values = self.compress_prefilling(module, hidden_states, keys, values, output[1], kwargs)
         else:
-            print(f"Decoding {q_len} tokens")
+            print(f"Decoding {q_len} tokens", flush=True)
             # Track decoding step at layer 0 (once per token generation)
             layer_idx = getattr(module, "layer_idx", 0)
             if layer_idx == 0:
