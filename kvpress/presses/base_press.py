@@ -347,8 +347,8 @@ class BasePress:
             # In new transformers version, cache.layers returns DynamicLayer objects
             # Access key and value tensors from the layer
             layer = cache.layers[module.layer_idx]
-            keys = layer.key
-            values = layer.value
+            keys = layer.keys
+            values = layer.values
 
         torch.cuda.synchronize()
         torch.cuda.empty_cache()
