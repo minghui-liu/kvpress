@@ -120,13 +120,47 @@ class H2OPress(ScorerPress):
         self.acc_attn = new_acc_attn
         self.n_tokens_in_sum = new_n_tokens_in_sum
 
+        kv_len = keys.shape[2]
+        layer_idx = getattr(module, "layer_idx", 0)
+        
         if self.cache_budget >= q_len:
+            # All tokens retained, track if needed
+            if layer_idx == 0:
+                if hasattr(self, 'tokenizer') and self.tokenizer is not None and hasattr(self, 'input_tokens') and self.input_tokens is not None:
+                    try:
+                        if kv_len <= len(self.input_tokens):
+                            all_token_ids = self.input_tokens[:kv_len].cpu().tolist()
+                            retained_token_ids = all_token_ids.copy()
+                        else:
+                            all_token_ids = self.input_tokens.cpu().tolist() + list(range(len(self.input_tokens), kv_len))
+                            retained_token_ids = all_token_ids.copy()
+                        self.track_generation_step(all_token_ids, retained_token_ids, self.tokenizer)
+                    except Exception:
+                        pass
             return keys, values
 
         # Compute scores
         scores = self.score(module, hidden_states, keys, values, attentions, False, kwargs)
         # Get indices of KV pairs with the lowest scores
         indices = scores.topk(self.cache_budget, dim=-1).indices
+
+        # Track token retention/eviction at first layer only
+        if layer_idx == 0:
+            if hasattr(self, 'tokenizer') and self.tokenizer is not None and hasattr(self, 'input_tokens') and self.input_tokens is not None:
+                try:
+                    # Map position indices to actual token IDs
+                    if kv_len <= len(self.input_tokens):
+                        all_token_ids = self.input_tokens[:kv_len].cpu().tolist()
+                        retained_positions = indices[0, 0, :].cpu().tolist()  # Get retained position indices
+                        retained_token_ids = [all_token_ids[pos] for pos in retained_positions]
+                    else:
+                        # If kv_len > input_tokens, we have generated tokens
+                        all_token_ids = self.input_tokens.cpu().tolist() + list(range(len(self.input_tokens), kv_len))
+                        retained_positions = indices[0, 0, :].cpu().tolist()
+                        retained_token_ids = [all_token_ids[pos] if pos < len(self.input_tokens) else pos for pos in retained_positions]
+                    self.track_generation_step(all_token_ids, retained_token_ids, self.tokenizer)
+                except Exception:
+                    pass
 
         # Prune keys and values
         kv_indices = indices.unsqueeze(-1).expand(-1, -1, -1, module.head_dim) # bsz, num_key_value_heads, cache_budget, head_dim

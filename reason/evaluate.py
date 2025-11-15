@@ -39,6 +39,7 @@ from kvpress import (
     RKVPress,
     RKVLSHPress,
     H2OPress,
+    SnapKVPress,
 )
 
 logger = logging.getLogger(__name__)
@@ -105,6 +106,8 @@ PRESS_DICT = {
     "h2o": H2OPress(),
     "random": RandomPress(),
     "streaming_llm": StreamingLLMPress(),
+    "snapkv": SnapKVPress(),
+    "snapkv_press": SnapKVPress(),  # Alias for snapkv
     "rkv": RKVPress(),
     "rkvlsh": RKVLSHPress(),
     "full": FullPress(),
@@ -297,10 +300,15 @@ def evaluate(
                 # Set tokenizer and input tokens for ranking data collection and per-step tracking
                 if hasattr(press, 'set_tokenizer_and_tokens'):
                     press.set_tokenizer_and_tokens(tokenizer, inputs["input_ids"][0])
-                # Also set tokenizer directly for per-step tracking
+                # Also set tokenizer directly for per-step tracking (for all presses including FullPress)
                 if hasattr(press, 'tokenizer'):
                     press.tokenizer = tokenizer
                 if hasattr(press, 'input_tokens'):
+                    press.input_tokens = inputs["input_ids"][0]
+                # For FullPress, ensure tokenizer is set (it doesn't have set_tokenizer_and_tokens)
+                if not hasattr(press, 'tokenizer') or press.tokenizer is None:
+                    press.tokenizer = tokenizer
+                if not hasattr(press, 'input_tokens') or press.input_tokens is None:
                     press.input_tokens = inputs["input_ids"][0]
             
             # Extract keywords from input text for tracking
