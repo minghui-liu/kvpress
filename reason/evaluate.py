@@ -437,8 +437,7 @@ def evaluate(
             
             # Collect per-step token tracking - always save step_tracking.json
             generation_steps = []
-            if press is not None and hasattr(press, 'get_generation_steps'):
-                generation_steps = press.get_generation_steps()
+            generation_steps = press.get_generation_steps()
             
             # Always save generation_steps (even if empty) to ensure step_tracking.json is created
             save_obj['generation_steps'] = generation_steps

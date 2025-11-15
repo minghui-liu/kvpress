@@ -216,8 +216,8 @@ class BasePress:
             step_info['evicted_tokens_text'] = [tokenizer.decode([tid], skip_special_tokens=True) if isinstance(tid, int) else str(tid) for tid in evicted_token_ids]
             step_info['newly_added_tokens_text'] = [tokenizer.decode([tid], skip_special_tokens=True) if isinstance(tid, int) else str(tid) for tid in newly_added_token_ids]
             
-            self.generation_steps.append(step_info)
-            self.current_generation_step += 1
+        self.generation_steps.append(step_info)
+        self.current_generation_step += 1
         
         # Update for next step: what's in cache now (after compression)
         self.previous_cache_tokens = current_retained_set.copy()
