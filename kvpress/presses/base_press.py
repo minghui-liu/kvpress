@@ -268,28 +268,6 @@ class BasePress:
             # Input tokens + generated tokens
             all_token_ids = self.input_tokens.cpu().tolist() + list(range(len(self.input_tokens), kv_len))
         
-        # For now, we'll get the retained tokens after compression
-        # But we need to track this step regardless of compression
-        # The actual retained tokens will be updated after compress_decoding is called
-        # So we'll use a placeholder and update it later, or we can track it here with the assumption
-        # that compression will happen and update the last step
-        
-        # Actually, we need to track BEFORE compression to know what was evicted
-        # But we also need to know what was retained AFTER compression
-        # The issue is that compress_decoding might not always be called or might return early
-        
-        # Let's track the state before compression, and then compress_decoding will update it
-        # But we need to ensure we always have an entry, so let's create a placeholder entry here
-        # and compress_decoding will update the last entry if compression happens
-        
-        # Actually, a better approach: track here with what we know (all tokens before compression)
-        # Then in compress_decoding, if compression happens, we update the last entry
-        # If no compression (cache_budget >= kv_len), we keep the entry as is (all retained)
-        
-        all_token_set = set(all_token_ids)
-        
-        # Create initial step info - will be updated by compress_decoding if compression happens
-        # If no compression happens (cache_budget >= kv_len), we'll still have this entry with all tokens retained
         step_info = {
             'step': self.current_generation_step,
             'phase': 'decoding',
@@ -406,11 +384,14 @@ class BasePress:
         torch.cuda.empty_cache()
         start=time()
 
+
         if is_prefilling:
+            print(f"Prefilling {q_len} tokens")
             # Track prefilling step before compression
             self._track_prefilling_step(module, keys)
             keys, values = self.compress_prefilling(module, hidden_states, keys, values, output[1], kwargs)
         else:
+            print(f"Decoding {q_len} tokens")
             # Track decoding step at layer 0 (once per token generation)
             layer_idx = getattr(module, "layer_idx", 0)
             if layer_idx == 0:
@@ -429,10 +410,6 @@ class BasePress:
             self.decoding_time += execution_time
             self.total_decoding_tokens += q_len
 
-        # if is_prefilling:
-        #     print(f"Prefilling {q_len} tokens took {execution_time:.2f} seconds")
-        # else:
-        #     print(f"Decoding {q_len} tokens took {execution_time:.2f} seconds")
 
         if isinstance(cache, QuantizedCache):
             cache._quantized_key_cache[module.layer_idx] = cache._quantize(keys, axis=cache.axis_key)
