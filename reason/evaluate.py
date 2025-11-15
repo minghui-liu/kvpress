@@ -435,25 +435,28 @@ def evaluate(
             save_obj['keywords'] = keywords
             save_obj['keyword_retention'] = keyword_retention
             
-            # Collect per-step token tracking if available
+            # Collect per-step token tracking - always save step_tracking.json
+            generation_steps = []
             if press is not None and hasattr(press, 'get_generation_steps'):
                 generation_steps = press.get_generation_steps()
-                if generation_steps:
-                    save_obj['generation_steps'] = generation_steps
-                    # Also save to a separate detailed JSON file
-                    step_tracking_file = save_filename.with_suffix('.step_tracking.json')
-                    step_data = {
-                        'question_index': i,
-                        'input_text': input_text,
-                        'question_id': example.get('question', '')[:100] if 'question' in example else f'question_{i}',
-                        'model_name': model_name,
-                        'press_name': press_name,
-                        'cache_budget': cache_budget,
-                        'generation_steps': generation_steps
-                    }
-                    # Append to file incrementally (one JSON object per line)
-                    with open(str(step_tracking_file), "a", encoding='utf-8') as step_f:
-                        step_f.write(json.dumps(step_data, indent=2) + "\n")
+            
+            # Always save generation_steps (even if empty) to ensure step_tracking.json is created
+            save_obj['generation_steps'] = generation_steps
+            
+            # Always save to a separate detailed JSON file
+            step_tracking_file = save_filename.with_suffix('.step_tracking.json')
+            step_data = {
+                'question_index': i,
+                'input_text': input_text,
+                'question_id': example.get('question', '')[:100] if 'question' in example else f'question_{i}',
+                'model_name': model_name,
+                'press_name': press_name,
+                'cache_budget': cache_budget,
+                'generation_steps': generation_steps
+            }
+            # Append to file incrementally (one JSON object per line)
+            with open(str(step_tracking_file), "a", encoding='utf-8') as step_f:
+                step_f.write(json.dumps(step_data, indent=2) + "\n")
             
             # Write result incrementally after each example
             with open(str(save_filename), "a", encoding='utf-8') as f:

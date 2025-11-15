@@ -107,8 +107,9 @@ class BasePress:
         self.all_token_indices: list = []  # List of all token indices before compression
         
         # Per-step token tracking during generation
-        self.generation_steps: list = []  # List of dicts with step info: {step, all_tokens, retained_tokens, evicted_tokens}
+        self.generation_steps: list = []  # List of dicts with step info: {step, all_tokens, retained_tokens, evicted_tokens, newly_added_tokens}
         self.current_generation_step: int = 0
+        self.previous_cache_tokens: set = set()  # Track what tokens were in the KV cache at the end of previous step (after compression)
 
     def reset_timing(self):
         """Reset timing counters"""
@@ -122,6 +123,7 @@ class BasePress:
         # Reset per-step tracking
         self.generation_steps = []
         self.current_generation_step = 0
+        self.previous_cache_tokens = set()
     
     def track_retention(self, all_indices: list, retained_indices: list):
         """Track which tokens were retained in the cache"""
@@ -142,36 +144,57 @@ class BasePress:
         """
         Track token retention/eviction at each generation step.
         
+        During decoding:
+        - Tokens are removed from KV cache during compression (evicted)
+        - New tokens are added to KV cache (the newly generated token)
+        
         Parameters
         ----------
         all_token_ids : list
-            All token IDs in the sequence at this step
+            All token IDs in the KV cache at this step (before compression)
+            This includes: previous_cache_tokens + newly generated token
         retained_token_ids : list
-            Token IDs that were retained in the KV cache
+            Token IDs that were retained in the KV cache (after compression)
         tokenizer : optional
             Tokenizer to decode tokens to text
         """
-        retained_set = set(retained_token_ids)
-        evicted_token_ids = [tid for tid in all_token_ids if tid not in retained_set]
+        all_token_set = set(all_token_ids)
+        current_retained_set = set(retained_token_ids)
+        
+        # Tokens that were in cache BEFORE compression = previous_cache + newly generated token
+        # Tokens that were in cache AFTER compression = retained_token_ids
+        
+        # Compute tokens that were evicted (removed from cache during compression)
+        # These are tokens that were in the cache before compression but not after
+        evicted_token_ids = list(all_token_set - current_retained_set)
+        
+        # Compute tokens that were newly added to the cache
+        # These are tokens in current retained set that weren't in previous cache
+        # (typically the newly generated token that was added and retained)
+        newly_added_token_ids = list(current_retained_set - self.previous_cache_tokens)
+        
+        # Also track what was in cache before compression for reference
+        previous_cache_token_ids = list(self.previous_cache_tokens)
         
         step_info = {
             'step': self.current_generation_step,
-            'all_tokens': all_token_ids.copy(),
+            'previous_cache_tokens': previous_cache_token_ids.copy(),
+            'all_tokens_before_compression': all_token_ids.copy(),
             'retained_tokens': retained_token_ids.copy(),
-            'evicted_tokens': evicted_token_ids.copy()
+            'evicted_tokens': evicted_token_ids.copy(),
+            'newly_added_tokens': newly_added_token_ids.copy()
         }
         
         # Decode tokens to text if tokenizer is available
         if tokenizer is not None:
-            try:
-                step_info['all_tokens_text'] = [tokenizer.decode([tid], skip_special_tokens=True) if isinstance(tid, int) else str(tid) for tid in all_token_ids]
-                step_info['retained_tokens_text'] = [tokenizer.decode([tid], skip_special_tokens=True) if isinstance(tid, int) else str(tid) for tid in retained_token_ids]
-                step_info['evicted_tokens_text'] = [tokenizer.decode([tid], skip_special_tokens=True) if isinstance(tid, int) else str(tid) for tid in evicted_token_ids]
-            except Exception as e:
-                # If decoding fails, just use token IDs as strings
-                step_info['all_tokens_text'] = [str(tid) for tid in all_token_ids]
-                step_info['retained_tokens_text'] = [str(tid) for tid in retained_token_ids]
-                step_info['evicted_tokens_text'] = [str(tid) for tid in evicted_token_ids]
+            step_info['previous_cache_tokens_text'] = [tokenizer.decode([tid], skip_special_tokens=True) if isinstance(tid, int) else str(tid) for tid in previous_cache_token_ids]
+            step_info['all_tokens_before_compression_text'] = [tokenizer.decode([tid], skip_special_tokens=True) if isinstance(tid, int) else str(tid) for tid in all_token_ids]
+            step_info['retained_tokens_text'] = [tokenizer.decode([tid], skip_special_tokens=True) if isinstance(tid, int) else str(tid) for tid in retained_token_ids]
+            step_info['evicted_tokens_text'] = [tokenizer.decode([tid], skip_special_tokens=True) if isinstance(tid, int) else str(tid) for tid in evicted_token_ids]
+            step_info['newly_added_tokens_text'] = [tokenizer.decode([tid], skip_special_tokens=True) if isinstance(tid, int) else str(tid) for tid in newly_added_token_ids]
+        
+        # Update for next step: what's in cache now (after compression)
+        self.previous_cache_tokens = current_retained_set.copy()
         
         self.generation_steps.append(step_info)
         self.current_generation_step += 1

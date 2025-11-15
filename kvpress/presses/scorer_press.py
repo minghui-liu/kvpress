@@ -196,17 +196,16 @@ class ScorerPress(BasePress):
         kv_len = keys.shape[2]
         if self.cache_budget >= kv_len:
             # All tokens retained, track if needed
-            if hasattr(self, 'tokenizer') and self.tokenizer is not None and hasattr(self, 'input_tokens') and self.input_tokens is not None:
-                if getattr(module, "layer_idx", 0) == 0:  # Only track at first layer to avoid duplicates
-                    # Map position indices to actual token IDs
-                    if kv_len <= len(self.input_tokens):
-                        all_token_ids = self.input_tokens[:kv_len].cpu().tolist()
-                        retained_token_ids = all_token_ids.copy()
-                    else:
-                        # If kv_len > input_tokens, we have generated tokens
-                        all_token_ids = self.input_tokens.cpu().tolist() + [0] * (kv_len - len(self.input_tokens))
-                        retained_token_ids = all_token_ids.copy()
-                    self.track_generation_step(all_token_ids, retained_token_ids, self.tokenizer)
+            if getattr(module, "layer_idx", 0) == 0:  # Only track at first layer to avoid duplicates
+                # Map position indices to actual token IDs
+                if kv_len <= len(self.input_tokens):
+                    all_token_ids = self.input_tokens[:kv_len].cpu().tolist()
+                    retained_token_ids = all_token_ids.copy()
+                else:
+                    # If kv_len > input_tokens, we have generated tokens
+                    all_token_ids = self.input_tokens.cpu().tolist() + list(range(len(self.input_tokens), kv_len))
+                    retained_token_ids = all_token_ids.copy()
+                self.track_generation_step(all_token_ids, retained_token_ids, self.tokenizer)
             return keys, values
 
         # Compute scores
@@ -216,19 +215,18 @@ class ScorerPress(BasePress):
         indices = indices.unsqueeze(-1).expand(-1, -1, -1, module.head_dim)
         
         # Track token retention/eviction at first layer only
-        if hasattr(self, 'tokenizer') and self.tokenizer is not None and hasattr(self, 'input_tokens') and self.input_tokens is not None:
-            if getattr(module, "layer_idx", 0) == 0:  # Only track at first layer to avoid duplicates
-                # Map position indices to actual token IDs
-                if kv_len <= len(self.input_tokens):
-                    all_token_ids = self.input_tokens[:kv_len].cpu().tolist()
-                    retained_positions = indices[0, 0, :, 0].cpu().tolist()  # Get retained position indices
-                    retained_token_ids = [all_token_ids[pos] for pos in retained_positions]
-                else:
-                    # If kv_len > input_tokens, we have generated tokens (use position indices as placeholders)
-                    all_token_ids = self.input_tokens.cpu().tolist() + list(range(len(self.input_tokens), kv_len))
-                    retained_positions = indices[0, 0, :, 0].cpu().tolist()
-                    retained_token_ids = [all_token_ids[pos] if pos < len(self.input_tokens) else pos for pos in retained_positions]
-                self.track_generation_step(all_token_ids, retained_token_ids, self.tokenizer)
+        if getattr(module, "layer_idx", 0) == 0:  # Only track at first layer to avoid duplicates
+            # Map position indices to actual token IDs
+            if kv_len <= len(self.input_tokens):
+                all_token_ids = self.input_tokens[:kv_len].cpu().tolist()
+                retained_positions = indices[0, 0, :, 0].cpu().tolist()  # Get retained position indices
+                retained_token_ids = [all_token_ids[pos] for pos in retained_positions]
+            else:
+                # If kv_len > input_tokens, we have generated tokens (use position indices as placeholders)
+                all_token_ids = self.input_tokens.cpu().tolist() + list(range(len(self.input_tokens), kv_len))
+                retained_positions = indices[0, 0, :, 0].cpu().tolist()
+                retained_token_ids = [all_token_ids[pos] if pos < len(self.input_tokens) else pos for pos in retained_positions]
+            self.track_generation_step(all_token_ids, retained_token_ids, self.tokenizer)
 
         # Save ranking data
         self.save_ranking_data(scores, indices, kv_len, False)
