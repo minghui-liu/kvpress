@@ -245,20 +245,17 @@ class RKVLSHPress(ScorerPress):
         layer_idx = getattr(module, "layer_idx", 0)
         if layer_idx == 0:
             if hasattr(self, 'tokenizer') and self.tokenizer is not None and hasattr(self, 'input_tokens') and self.input_tokens is not None:
-                try:
-                    # Map position indices to actual token IDs
-                    if kv_len <= len(self.input_tokens):
-                        all_token_ids = self.input_tokens[:kv_len].cpu().tolist()
-                        retained_positions = indices[0, 0, :, 0].cpu().tolist()  # Get retained position indices
-                        retained_token_ids = [all_token_ids[pos] for pos in retained_positions]
-                    else:
-                        # If kv_len > input_tokens, we have generated tokens
-                        all_token_ids = self.input_tokens.cpu().tolist() + list(range(len(self.input_tokens), kv_len))
-                        retained_positions = indices[0, 0, :, 0].cpu().tolist()
-                        retained_token_ids = [all_token_ids[pos] if pos < len(self.input_tokens) else pos for pos in retained_positions]
-                    self.track_generation_step(all_token_ids, retained_token_ids, self.tokenizer)
-                except Exception:
-                    pass
+                # Map position indices to actual token IDs
+                if kv_len <= len(self.input_tokens):
+                    all_token_ids = self.input_tokens[:kv_len].cpu().tolist()
+                    retained_positions = indices[0, 0, :, 0].cpu().tolist()  # Get retained position indices
+                    retained_token_ids = [all_token_ids[pos] for pos in retained_positions]
+                else:
+                    # If kv_len > input_tokens, we have generated tokens
+                    all_token_ids = self.input_tokens.cpu().tolist() + list(range(len(self.input_tokens), kv_len))
+                    retained_positions = indices[0, 0, :, 0].cpu().tolist()
+                    retained_token_ids = [all_token_ids[pos] if pos < len(self.input_tokens) else pos for pos in retained_positions]
+                self.track_generation_step(all_token_ids, retained_token_ids, self.tokenizer)
 
         # Prune keys and values
         keys = keys.gather(2, indices).contiguous()
