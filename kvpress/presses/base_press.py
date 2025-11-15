@@ -344,8 +344,8 @@ class BasePress:
             keys = cache._dequantize(cache._quantized_key_cache[module.layer_idx])
             values = cache._dequantize(cache._quantized_value_cache[module.layer_idx])
         else:
-            keys = cache.key_cache[module.layer_idx]
-            values = cache.value_cache[module.layer_idx]
+            keys = cache.layers[module.layer_idx]
+            values = cache.layers[module.layer_idx]
 
         torch.cuda.synchronize()
         torch.cuda.empty_cache()
