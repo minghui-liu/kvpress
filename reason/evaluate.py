@@ -14,7 +14,8 @@ from datasets import load_dataset
 from fire import Fire
 
 from tqdm import tqdm
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer,AutoConfig
+from seerattn.models.qwen3 import SeerDecodingQwen3ForCausalLM
 from kvpress import BasePress, KeyRerotationPress, PerLayerCompressionPress
 
 from utils import default_extractor
@@ -142,7 +143,8 @@ def evaluate(
     compression_ratio: float = 0.1,
     key_channel_compression_ratio: float = 0.5,
     n_hash_buckets: int = 6,
-    lam:float=0.1
+    lam:float=0.1,
+    track_tokens: bool = True
 ):
     """
     Evaluate a model on a dataset using a press and save the results
@@ -228,6 +230,7 @@ def evaluate(
         # Clear the file first if it exists
         if save_filename.exists():
             save_filename.unlink()
+        # Delete step tracking file if it exists (will be recreated if track_tokens is True)
         if save_filename.with_suffix('.step_tracking.json').exists():
             save_filename.with_suffix('.step_tracking.json').unlink()
         # Load dataset
@@ -265,13 +268,27 @@ def evaluate(
                 pass
 
         # Load model
-        model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            device_map="auto",
-            trust_remote_code=True,
-            **model_kwargs,
-        )
-        tokenizer = AutoTokenizer.from_pretrained(model_name, device_map="auto", trust_remote_code=True)
+        if model_name=="SeerAttention/SeerAttention-Decode-R1-Distill-Qwen-14B-AttnGates":
+            model = SeerDecodingQwen3ForCausalLM.from_pretrained(
+                    model_name,
+                    torch_dtype=torch.bfloat16,
+                    seerattn_sparsity_method='token_budget', 
+                    seerattn_token_budget = cache_budget 
+                )
+            model.to(device)
+            config = AutoConfig.from_pretrained(model_name)
+            tokenizer = AutoTokenizer.from_pretrained(
+                config.base_model, 
+                padding_side="left",
+            )
+        else:
+            model = AutoModelForCausalLM.from_pretrained(
+                model_name,
+                device_map="auto",
+                trust_remote_code=True,
+                **model_kwargs,
+            )
+            tokenizer = AutoTokenizer.from_pretrained(model_name, device_map="auto", trust_remote_code=True)
         tokenizer.pad_token = tokenizer.eos_token
 
         # Run generation on each context of the dataset
@@ -287,8 +304,6 @@ def evaluate(
             # Memory
             torch.cuda.reset_peak_memory_stats()
             torch.cuda.empty_cache()
-            idle_peak_memory = torch.cuda.max_memory_allocated()
-            initial_peak_memory = torch.cuda.max_memory_allocated()
 
             torch.cuda.synchronize()
             torch.cuda.empty_cache()
@@ -312,8 +327,13 @@ def evaluate(
                     press.input_tokens = inputs["input_ids"][0]
             
             # Extract keywords from input text for tracking
-            keywords = extract_keywords(input_text)
-            keyword_token_ids = tokenize_keywords(keywords, tokenizer)
+            # Extract keywords only if token tracking is enabled
+            if track_tokens:
+                keywords = extract_keywords(input_text)
+                keyword_token_ids = tokenize_keywords(keywords, tokenizer)
+            else:
+                keywords = {}
+                keyword_token_ids = {}
             input_token_ids = inputs["input_ids"][0].tolist()
 
             # Run generation
@@ -389,27 +409,40 @@ def evaluate(
             if press is not None and hasattr(press, 'save_all_ranking_data'):
                 press.save_all_ranking_data()
             
-            # Track keyword retention if press tracks retention
-            keyword_retention = {}
-            if press is not None and hasattr(press, 'get_final_retained_indices'):
-                final_retained_indices = list(press.get_final_retained_indices())
-                if final_retained_indices:
-                    retention_results = track_token_retention(
-                        input_token_ids,
-                        final_retained_indices,
-                        keyword_token_ids
-                    )
-                    keyword_retention = {
-                        key_type: {
-                            'total_count': results['total_keyword_tokens'],
-                            'retained_count': results['retained_keyword_tokens'],
-                            'evicted_count': results['evicted_keyword_tokens'],
-                            'retention_rate': results['retention_rate']
+            # Track keyword retention and token tracking only if enabled
+            if track_tokens:
+                # Track keyword retention if press tracks retention
+                keyword_retention = {}
+                if press is not None and hasattr(press, 'get_final_retained_indices'):
+                    final_retained_indices = list(press.get_final_retained_indices())
+                    if final_retained_indices:
+                        retention_results = track_token_retention(
+                            input_token_ids,
+                            final_retained_indices,
+                            keyword_token_ids
+                        )
+                        keyword_retention = {
+                            key_type: {
+                                'total_count': results['total_keyword_tokens'],
+                                'retained_count': results['retained_keyword_tokens'],
+                                'evicted_count': results['evicted_keyword_tokens'],
+                                'retention_rate': results['retention_rate']
+                            }
+                            for key_type, results in retention_results.items()
                         }
-                        for key_type, results in retention_results.items()
-                    }
+                    else:
+                        # If no retention tracking, mark all as retained (full cache)
+                        keyword_retention = {
+                            key_type: {
+                                'total_count': len(token_set),
+                                'retained_count': len(token_set),
+                                'evicted_count': 0,
+                                'retention_rate': 1.0
+                            }
+                            for key_type, token_set in keyword_token_ids.items()
+                        }
                 else:
-                    # If no retention tracking, mark all as retained (full cache)
+                    # For full press or no press, all tokens are retained
                     keyword_retention = {
                         key_type: {
                             'total_count': len(token_set),
@@ -419,43 +452,36 @@ def evaluate(
                         }
                         for key_type, token_set in keyword_token_ids.items()
                     }
-            else:
-                # For full press or no press, all tokens are retained
-                keyword_retention = {
-                    key_type: {
-                        'total_count': len(token_set),
-                        'retained_count': len(token_set),
-                        'evicted_count': 0,
-                        'retention_rate': 1.0
-                    }
-                    for key_type, token_set in keyword_token_ids.items()
+                
+                # Add keyword retention to save_obj
+                save_obj['keywords'] = keywords
+                save_obj['keyword_retention'] = keyword_retention
+                
+                # Collect per-step token tracking
+                generation_steps = []
+                if press is not None:
+                    generation_steps = press.get_generation_steps()
+                
+                # Save generation_steps to save_obj
+                save_obj['generation_steps'] = generation_steps
+                
+                # Save to a separate detailed JSON file
+                step_tracking_file = save_filename.with_suffix('.step_tracking.json')
+                step_data = {
+                    'question_index': i,
+                    'input_text': input_text,
+                    'question_id': example.get('question', '')[:100] if 'question' in example else f'question_{i}',
+                    'model_name': model_name,
+                    'press_name': press_name,
+                    'cache_budget': cache_budget,
+                    'generation_steps': generation_steps
                 }
-            
-            # Add keyword retention to save_obj
-            save_obj['keywords'] = keywords
-            save_obj['keyword_retention'] = keyword_retention
-            
-            # Collect per-step token tracking - always save step_tracking.json
-            generation_steps = []
-            generation_steps = press.get_generation_steps()
-            
-            # Always save generation_steps (even if empty) to ensure step_tracking.json is created
-            save_obj['generation_steps'] = generation_steps
-            
-            # Always save to a separate detailed JSON file
-            step_tracking_file = save_filename.with_suffix('.step_tracking.json')
-            step_data = {
-                'question_index': i,
-                'input_text': input_text,
-                'question_id': example.get('question', '')[:100] if 'question' in example else f'question_{i}',
-                'model_name': model_name,
-                'press_name': press_name,
-                'cache_budget': cache_budget,
-                'generation_steps': generation_steps
-            }
-            # Append to file incrementally (one JSON object per line)
-            with open(str(step_tracking_file), "a", encoding='utf-8') as step_f:
-                step_f.write(json.dumps(step_data, indent=2) + "\n")
+                # Append to file incrementally (one JSON object per line)
+                with open(str(step_tracking_file), "a", encoding='utf-8') as step_f:
+                    step_f.write(json.dumps(step_data, indent=2) + "\n")
+            else:
+                # Skip token tracking - set empty values
+                save_obj['generation_steps'] = []
             
             # Write result incrementally after each example
             with open(str(save_filename), "a", encoding='utf-8') as f:
