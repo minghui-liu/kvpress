@@ -15,7 +15,10 @@ from fire import Fire
 
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer,AutoConfig
-from seer_attn import SeerDecodingQwen3ForCausalLM
+try:
+    from seer_attn import SeerDecodingQwen3ForCausalLM
+except ImportError:
+    SeerDecodingQwen3ForCausalLM = None
 from kvpress import BasePress, KeyRerotationPress, PerLayerCompressionPress
 
 from utils import default_extractor
