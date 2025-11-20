@@ -331,7 +331,8 @@ def evaluate(
             start=time()
 
             # Reset timing before generation
-            if press is not None:
+            # Skip all press setup for NonePress or SeerAttention models
+            if press is not None and not isinstance(press, NonePress):
                 press.reset_timing()
                 # Set tokenizer and input tokens for ranking data collection and per-step tracking
                 if hasattr(press, 'set_tokenizer_and_tokens'):
@@ -358,9 +359,14 @@ def evaluate(
             input_token_ids = inputs["input_ids"][0].tolist()
 
             # Run generation
-            # Use press context manager if press is not None
-            # NonePress will still use the context manager but does nothing
-            press_context = press(model) if press is not None else contextlib.nullcontext()
+            # For SeerAttention models with NonePress, skip press context entirely
+            # For other models or presses, use the press context manager
+            use_press_context = (
+                press is not None 
+                and not isinstance(press, NonePress)
+                and model_name != "SeerAttention/SeerAttention-Decode-R1-Distill-Qwen-14B-AttnGates"
+            )
+            press_context = press(model) if use_press_context else contextlib.nullcontext()
             
             if do_sampling:
                 with press_context:
@@ -373,7 +379,7 @@ def evaluate(
                         temperature=0.7,
                         repetition_penalty=1.2,
                         use_cache=True,
-                        output_attentions=output_attentions(press) if press is not None else False,
+                        output_attentions=output_attentions(press) if press is not None and not isinstance(press, NonePress) else False,
                     )
             else:
                 with press_context:
@@ -383,7 +389,7 @@ def evaluate(
                         max_new_tokens=max_new_tokens,
                         do_sample=False,
                         use_cache=True,
-                        output_attentions=output_attentions(press) if press is not None else False,
+                        output_attentions=output_attentions(press) if press is not None and not isinstance(press, NonePress) else False,
                     )
 
             pred_start = inputs["input_ids"].shape[1]
