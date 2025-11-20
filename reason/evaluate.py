@@ -337,8 +337,16 @@ def evaluate(
                 and (press is None or isinstance(press, NonePress))
             )
             
+            # Initialize variables that might be used later
+            keywords = {}
+            keyword_token_ids = {}
+            input_token_ids = []
+            
             if is_seer_attention_none:
                 # Simplified path: direct generation without any press infrastructure
+                # Initialize input_token_ids for potential use in tracking (though tracking is skipped)
+                input_token_ids = inputs["input_ids"][0].tolist()
+                
                 if do_sampling:
                     outputs = model.generate(
                         inputs["input_ids"],
@@ -469,7 +477,8 @@ def evaluate(
                 press.save_all_ranking_data()
             
             # Track keyword retention and token tracking only if enabled
-            if track_tokens:
+            # Skip all tracking for SeerAttention with NonePress (simplified path)
+            if track_tokens and not is_seer_attention_none:
                 # Track keyword retention if press tracks retention
                 # NonePress doesn't track retention, so skip if it's NonePress
                 keyword_retention = {}
@@ -519,27 +528,29 @@ def evaluate(
                 
                 # Collect per-step token tracking
                 # NonePress doesn't track generation steps
+                # Skip for SeerAttention with NonePress (simplified path)
                 generation_steps = []
-                if press is not None and not isinstance(press, NonePress) and hasattr(press, 'get_generation_steps'):
+                if not is_seer_attention_none and press is not None and not isinstance(press, NonePress) and hasattr(press, 'get_generation_steps'):
                     generation_steps = press.get_generation_steps()
                 
                 # Save generation_steps to save_obj
                 save_obj['generation_steps'] = generation_steps
                 
-                # Save to a separate detailed JSON file
-                step_tracking_file = save_filename.with_suffix('.step_tracking.json')
-                step_data = {
-                    'question_index': i,
-                    'input_text': input_text,
-                    'question_id': example.get('question', '')[:100] if 'question' in example else f'question_{i}',
-                    'model_name': model_name,
-                    'press_name': press_name,
-                    'cache_budget': cache_budget,
-                    'generation_steps': generation_steps
-                }
-                # Append to file incrementally (one JSON object per line)
-                with open(str(step_tracking_file), "a", encoding='utf-8') as step_f:
-                    step_f.write(json.dumps(step_data, indent=2) + "\n")
+                # Save to a separate detailed JSON file (skip for simplified path)
+                if not is_seer_attention_none and generation_steps:
+                    step_tracking_file = save_filename.with_suffix('.step_tracking.json')
+                    step_data = {
+                        'question_index': i,
+                        'input_text': input_text,
+                        'question_id': example.get('question', '')[:100] if 'question' in example else f'question_{i}',
+                        'model_name': model_name,
+                        'press_name': press_name,
+                        'cache_budget': cache_budget,
+                        'generation_steps': generation_steps
+                    }
+                    # Append to file incrementally (one JSON object per line)
+                    with open(str(step_tracking_file), "a", encoding='utf-8') as step_f:
+                        step_f.write(json.dumps(step_data, indent=2) + "\n")
             else:
                 # Skip token tracking - set empty values
                 save_obj['generation_steps'] = []
