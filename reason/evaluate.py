@@ -330,46 +330,16 @@ def evaluate(
             torch.cuda.empty_cache()
             start=time()
 
-            # Reset timing before generation
-            # Skip all press setup for NonePress or SeerAttention models
-            if press is not None and not isinstance(press, NonePress):
-                press.reset_timing()
-                # Set tokenizer and input tokens for ranking data collection and per-step tracking
-                if hasattr(press, 'set_tokenizer_and_tokens'):
-                    press.set_tokenizer_and_tokens(tokenizer, inputs["input_ids"][0])
-                # Also set tokenizer directly for per-step tracking (for all presses including FullPress)
-                if hasattr(press, 'tokenizer'):
-                    press.tokenizer = tokenizer
-                if hasattr(press, 'input_tokens'):
-                    press.input_tokens = inputs["input_ids"][0]
-                # For FullPress, ensure tokenizer is set (it doesn't have set_tokenizer_and_tokens)
-                if not hasattr(press, 'tokenizer') or press.tokenizer is None:
-                    press.tokenizer = tokenizer
-                if not hasattr(press, 'input_tokens') or press.input_tokens is None:
-                    press.input_tokens = inputs["input_ids"][0]
-            
-            # Extract keywords from input text for tracking
-            # Extract keywords only if token tracking is enabled
-            if track_tokens:
-                keywords = extract_keywords(input_text)
-                keyword_token_ids = tokenize_keywords(keywords, tokenizer)
-            else:
-                keywords = {}
-                keyword_token_ids = {}
-            input_token_ids = inputs["input_ids"][0].tolist()
-
-            # Run generation
-            # For SeerAttention models with NonePress, skip press context entirely
-            # For other models or presses, use the press context manager
-            use_press_context = (
-                press is not None 
-                and not isinstance(press, NonePress)
-                and model_name != "SeerAttention/SeerAttention-Decode-R1-Distill-Qwen-14B-AttnGates"
+            # Special handling for SeerAttention with NonePress: use simplified inference path
+            # This bypasses all press infrastructure to avoid cache initialization issues
+            is_seer_attention_none = (
+                model_name == "SeerAttention/SeerAttention-Decode-R1-Distill-Qwen-14B-AttnGates"
+                and (press is None or isinstance(press, NonePress))
             )
-            press_context = press(model) if use_press_context else contextlib.nullcontext()
             
-            if do_sampling:
-                with press_context:
+            if is_seer_attention_none:
+                # Simplified path: direct generation without any press infrastructure
+                if do_sampling:
                     outputs = model.generate(
                         inputs["input_ids"],
                         attention_mask=inputs["attention_mask"],
@@ -379,18 +349,72 @@ def evaluate(
                         temperature=0.7,
                         repetition_penalty=1.2,
                         use_cache=True,
-                        output_attentions=output_attentions(press) if press is not None and not isinstance(press, NonePress) else False,
+                        output_attentions=False,
                     )
-            else:
-                with press_context:
+                else:
                     outputs = model.generate(
                         inputs["input_ids"],
                         attention_mask=inputs["attention_mask"],
                         max_new_tokens=max_new_tokens,
                         do_sample=False,
                         use_cache=True,
-                        output_attentions=output_attentions(press) if press is not None and not isinstance(press, NonePress) else False,
+                        output_attentions=False,
                     )
+            else:
+                # Standard path with press infrastructure
+                # Reset timing before generation
+                if press is not None and not isinstance(press, NonePress):
+                    press.reset_timing()
+                    # Set tokenizer and input tokens for ranking data collection and per-step tracking
+                    if hasattr(press, 'set_tokenizer_and_tokens'):
+                        press.set_tokenizer_and_tokens(tokenizer, inputs["input_ids"][0])
+                    # Also set tokenizer directly for per-step tracking (for all presses including FullPress)
+                    if hasattr(press, 'tokenizer'):
+                        press.tokenizer = tokenizer
+                    if hasattr(press, 'input_tokens'):
+                        press.input_tokens = inputs["input_ids"][0]
+                    # For FullPress, ensure tokenizer is set (it doesn't have set_tokenizer_and_tokens)
+                    if not hasattr(press, 'tokenizer') or press.tokenizer is None:
+                        press.tokenizer = tokenizer
+                    if not hasattr(press, 'input_tokens') or press.input_tokens is None:
+                        press.input_tokens = inputs["input_ids"][0]
+                
+                # Extract keywords from input text for tracking
+                # Extract keywords only if token tracking is enabled
+                if track_tokens:
+                    keywords = extract_keywords(input_text)
+                    keyword_token_ids = tokenize_keywords(keywords, tokenizer)
+                else:
+                    keywords = {}
+                    keyword_token_ids = {}
+                input_token_ids = inputs["input_ids"][0].tolist()
+
+                # Use press context manager
+                press_context = press(model) if press is not None and not isinstance(press, NonePress) else contextlib.nullcontext()
+                
+                if do_sampling:
+                    with press_context:
+                        outputs = model.generate(
+                            inputs["input_ids"],
+                            attention_mask=inputs["attention_mask"],
+                            max_new_tokens=max_new_tokens,
+                            do_sample=True,
+                            top_p=0.9,
+                            temperature=0.7,
+                            repetition_penalty=1.2,
+                            use_cache=True,
+                            output_attentions=output_attentions(press) if press is not None and not isinstance(press, NonePress) else False,
+                        )
+                else:
+                    with press_context:
+                        outputs = model.generate(
+                            inputs["input_ids"],
+                            attention_mask=inputs["attention_mask"],
+                            max_new_tokens=max_new_tokens,
+                            do_sample=False,
+                            use_cache=True,
+                            output_attentions=output_attentions(press) if press is not None and not isinstance(press, NonePress) else False,
+                        )
 
             pred_start = inputs["input_ids"].shape[1]
             response = tokenizer.decode(outputs[0][pred_start:], skip_special_tokens=True)
