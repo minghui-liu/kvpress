@@ -15,7 +15,7 @@ from fire import Fire
 
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer,AutoConfig
-from seerattn.models.qwen3 import SeerDecodingQwen3ForCausalLM
+from seer_attn import SeerDecodingQwen3ForCausalLM
 from kvpress import BasePress, KeyRerotationPress, PerLayerCompressionPress
 
 from utils import default_extractor
