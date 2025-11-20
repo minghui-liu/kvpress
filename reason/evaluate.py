@@ -41,8 +41,8 @@ from kvpress import (
     RKVLSHPress,
     H2OPress,
     SnapKVPress,
+    NonePress,
 )
-from kvpress.presses.none_press import NonePress
 
 logger = logging.getLogger(__name__)
 
