@@ -155,7 +155,7 @@ def main():
         "meta-llama--Meta-Llama-3.1-8B-Instruct",
         "deepseek-ai--DeepSeek-R1-Distill-Qwen-7B",
         "nvidia--Llama-3.1-Nemotron-Nano-8B-v1",
-        "deepseek-ai--DeepSeek-R1-Distill-Llama-8B__full",
+        "deepseek-ai--DeepSeek-R1-Distill-Llama-8B",
     ]
     question_index = args.question_index
     
