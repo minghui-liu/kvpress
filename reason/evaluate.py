@@ -269,13 +269,29 @@ def evaluate(
 
         # Load model
         if model_name=="SeerAttention/SeerAttention-Decode-R1-Distill-Qwen-14B-AttnGates":
-            model = SeerDecodingQwen3ForCausalLM.from_pretrained(
-                    model_name,
-                    torch_dtype=torch.bfloat16,
-                    seerattn_sparsity_method='token_budget', 
-                    seerattn_token_budget = cache_budget 
-                )
-            model.to(device)
+            # Patch torch.load to handle CPU loading when CUDA is not available
+            # This is needed because SeerAttention library loads weights without map_location
+            original_load = torch.load
+            if not torch.cuda.is_available():
+                def patched_load(*args, **kwargs):
+                    # If map_location is not specified and CUDA is not available, use CPU
+                    if 'map_location' not in kwargs:
+                        kwargs['map_location'] = torch.device('cpu')
+                    return original_load(*args, **kwargs)
+                torch.load = patched_load
+            
+            try:
+                model = SeerDecodingQwen3ForCausalLM.from_pretrained(
+                        model_name,
+                        torch_dtype=torch.bfloat16,
+                        seerattn_sparsity_method='token_budget', 
+                        seerattn_token_budget = cache_budget 
+                    )
+                model.to(device)
+            finally:
+                # Restore original torch.load
+                if not torch.cuda.is_available():
+                    torch.load = original_load
             config = AutoConfig.from_pretrained(model_name)
             tokenizer = AutoTokenizer.from_pretrained(
                 config.base_model, 
