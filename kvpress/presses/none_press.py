@@ -1,8 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 1993-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+from contextlib import contextmanager
 from dataclasses import dataclass
+from typing import Generator
 from kvpress.presses.base_press import BasePress
+from transformers import PreTrainedModel
 from torch import nn
 
 
@@ -10,7 +13,7 @@ from torch import nn
 class NonePress(BasePress):
     """
     A no-op press that does absolutely nothing.
-    Returns keys and values unchanged, no compression, no tracking.
+    Returns keys and values unchanged, no compression, no tracking, no hooks.
     Use this when you want to run inference without any KV cache compression.
     """
     
@@ -37,4 +40,13 @@ class NonePress(BasePress):
     ):
         """No compression - return keys and values as-is"""
         return keys, values
+    
+    @contextmanager
+    def __call__(self, model: PreTrainedModel) -> Generator:
+        """
+        Override __call__ to do absolutely nothing - no hooks, no operations.
+        This allows models like SeerAttention to run without any interference.
+        """
+        # Do nothing - just yield without registering any hooks
+        yield
 
