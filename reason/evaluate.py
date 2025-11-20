@@ -238,7 +238,7 @@ def evaluate(
         # Delete step tracking file if it exists (will be recreated if track_tokens is True)
         if save_filename.with_suffix('.step_tracking.json').exists():
             save_filename.with_suffix('.step_tracking.json').unlink()
-        # Load dataset
+        # Load datasetf
         ds = load_dataset(hf_name, data_dir=data_dir, split=data_split)
         if num_samples > 0:
             assert num_samples <= len(ds), f"num_samples {num_samples} is larger than the dataset size {len(ds)}"
@@ -274,7 +274,7 @@ def evaluate(
                 pass
 
         # Load model
-        if model_name=="SeerAttention/SeerAttention-Decode-R1-Distill-Qwen-14B-AttnGates":
+        if "SeerAttention" in model_name:
             # Patch torch.load to handle CPU loading when CUDA is not available
             # This is needed because SeerAttention library loads weights without map_location
             original_load = torch.load
@@ -336,7 +336,7 @@ def evaluate(
             # Special handling for SeerAttention with NonePress: use simplified inference path
             # This bypasses all press infrastructure to avoid cache initialization issues
             is_seer_attention_none = (
-                model_name == "SeerAttention/SeerAttention-Decode-R1-Distill-Qwen-14B-AttnGates"
+                "SeerAttention" in model_name
                 and (press is None or isinstance(press, NonePress))
             )
             
