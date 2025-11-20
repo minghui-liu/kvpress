@@ -42,6 +42,7 @@ from kvpress import (
     H2OPress,
     SnapKVPress,
 )
+from kvpress.presses.none_press import NonePress
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +113,7 @@ PRESS_DICT = {
     "rkv": RKVPress(),
     "rkvlsh": RKVLSHPress(),
     "full": FullPress(),
+    "none": NonePress(),  # No-op press that does nothing
 }
 
 
@@ -247,17 +249,18 @@ def evaluate(
         formatter = FORMATTER_DICT[dataset]
         extractor = EXTRACTOR_DICT[dataset] 
 
-        # Set the cache budget for the press
-        press.cache_budget = cache_budget
+        # Set the cache budget for the press (NonePress doesn't use it, but set it anyway)
+        if press is not None:
+            press.cache_budget = cache_budget
 
-        if press_name=="rkvlsh":
+        if press_name=="rkvlsh" and press is not None:
             press.n_hash_buckets=n_hash_buckets
             press.lam = lam
 
 
         # Initialize pipeline with the correct attention implementation
         model_kwargs = {"dtype": "auto"}
-        if isinstance(press, H2OPress):
+        if press is not None and isinstance(press, H2OPress):
             model_kwargs["attn_implementation"] = "eager"
         else:
             try:
@@ -353,8 +356,12 @@ def evaluate(
             input_token_ids = inputs["input_ids"][0].tolist()
 
             # Run generation
+            # Use press context manager if press is not None
+            # NonePress will still use the context manager but does nothing
+            press_context = press(model) if press is not None else contextlib.nullcontext()
+            
             if do_sampling:
-                with press(model) if press is not None else contextlib.nullcontext():
+                with press_context:
                     outputs = model.generate(
                         inputs["input_ids"],
                         attention_mask=inputs["attention_mask"],
@@ -364,17 +371,17 @@ def evaluate(
                         temperature=0.7,
                         repetition_penalty=1.2,
                         use_cache=True,
-                        output_attentions=output_attentions(press),
+                        output_attentions=output_attentions(press) if press is not None else False,
                     )
             else:
-                with press(model) if press is not None else contextlib.nullcontext():
+                with press_context:
                     outputs = model.generate(
                         inputs["input_ids"],
                         attention_mask=inputs["attention_mask"],
                         max_new_tokens=max_new_tokens,
                         do_sample=False,
                         use_cache=True,
-                        output_attentions=output_attentions(press),
+                        output_attentions=output_attentions(press) if press is not None else False,
                     )
 
             pred_start = inputs["input_ids"].shape[1]
@@ -389,14 +396,18 @@ def evaluate(
 
             # Get timing metrics from press if available
             timing_metrics = {}
-            if press is not None:
+            if press is not None and hasattr(press, 'get_timing_metrics'):
                 timing_metrics = press.get_timing_metrics()
 
             # calculate the compression ratio
             input_token_count = inputs["input_ids"].shape[1]
             output_token_count = outputs[0].shape[0] - input_token_count
             total_token_count = outputs[0].shape[0]
-            if total_token_count <= cache_budget:
+            
+            # For NonePress, no compression is applied
+            if press is None or isinstance(press, NonePress):
+                actual_compression = 1.0
+            elif total_token_count <= cache_budget:
                 actual_compression = 1.0
             else:
                 actual_compression = cache_budget / total_token_count
@@ -428,8 +439,9 @@ def evaluate(
             # Track keyword retention and token tracking only if enabled
             if track_tokens:
                 # Track keyword retention if press tracks retention
+                # NonePress doesn't track retention, so skip if it's NonePress
                 keyword_retention = {}
-                if press is not None and hasattr(press, 'get_final_retained_indices'):
+                if press is not None and not isinstance(press, NonePress) and hasattr(press, 'get_final_retained_indices'):
                     final_retained_indices = list(press.get_final_retained_indices())
                     if final_retained_indices:
                         retention_results = track_token_retention(
@@ -474,8 +486,9 @@ def evaluate(
                 save_obj['keyword_retention'] = keyword_retention
                 
                 # Collect per-step token tracking
+                # NonePress doesn't track generation steps
                 generation_steps = []
-                if press is not None:
+                if press is not None and not isinstance(press, NonePress) and hasattr(press, 'get_generation_steps'):
                     generation_steps = press.get_generation_steps()
                 
                 # Save generation_steps to save_obj
