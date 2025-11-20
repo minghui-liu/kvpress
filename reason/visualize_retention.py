@@ -168,7 +168,9 @@ def main():
         for target_model in target_model_list:
             # Fix the expected filename pattern
             expected_file_name = f"gsm8k__main__{target_model}__{target_press_name}__budget{target_budget}__max_new_tokens2048__num_samples15__sampling.step_tracking.json"
-            
+            print(expected_file_name)
+            print(step_tracking_file.name)
+            print("--------------------------------")
             if expected_file_name == step_tracking_file.name:
                 print(f"Processing: {step_tracking_file.name}")
                 
