@@ -64,6 +64,5 @@ __all__ = [
     "FullPress",
     "NonePress",
     "RKVPress",
-    "NonePress",
     "RKVLSHPress",
 ]

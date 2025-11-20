@@ -259,7 +259,7 @@ def evaluate(
 
 
         # Initialize pipeline with the correct attention implementation
-        model_kwargs = {"dtype": "auto"}
+        model_kwargs = {}
         if press is not None and isinstance(press, H2OPress):
             model_kwargs["attn_implementation"] = "eager"
         else:
@@ -301,10 +301,12 @@ def evaluate(
                 padding_side="left",
             )
         else:
+            # Use torch_dtype instead of dtype for AutoModelForCausalLM
             model = AutoModelForCausalLM.from_pretrained(
                 model_name,
                 device_map="auto",
                 trust_remote_code=True,
+                torch_dtype="auto",
                 **model_kwargs,
             )
             tokenizer = AutoTokenizer.from_pretrained(model_name, device_map="auto", trust_remote_code=True)
