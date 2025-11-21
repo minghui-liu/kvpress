@@ -336,26 +336,10 @@ def evaluate(
                 # Initialize input_token_ids for potential use in tracking (though tracking is skipped)
                 input_token_ids = inputs["input_ids"][0].tolist()
                 
-                if do_sampling:
-                    outputs = model.generate(
+                outputs = model.generate(
                         inputs["input_ids"],
                         attention_mask=inputs["attention_mask"],
                         max_new_tokens=max_new_tokens,
-                        do_sample=True,
-                        top_p=0.9,
-                        temperature=0.7,
-                        repetition_penalty=1.2,
-                        use_cache=True,
-                        output_attentions=False,
-                    )
-                else:
-                    outputs = model.generate(
-                        inputs["input_ids"],
-                        attention_mask=inputs["attention_mask"],
-                        max_new_tokens=max_new_tokens,
-                        do_sample=False,
-                        use_cache=True,
-                        output_attentions=False,
                     )
             else:
                 # Standard path with press infrastructure
