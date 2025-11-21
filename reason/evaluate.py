@@ -16,7 +16,7 @@ from fire import Fire
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer,AutoConfig
 try:
-    from seer_attn import SeerDecodingQwen3ForCausalLM
+    from seer_attn import SeerDecodingQwen2ForCausalLM
 except ImportError:
     SeerDecodingQwen3ForCausalLM = None
 from kvpress import BasePress, KeyRerotationPress, PerLayerCompressionPress
@@ -277,7 +277,7 @@ def evaluate(
         if "SeerAttention" in model_name:
             # Patch torch.load to handle CPU loading when CUDA is not available
             # This is needed because SeerAttention library loads weights without map_location
-            model = SeerDecodingQwen3ForCausalLM.from_pretrained(
+            model = SeerDecodingQwen2ForCausalLM.from_pretrained(
                         model_name,
                         torch_dtype=torch.bfloat16,
                         seerattn_sparsity_method='token_budget', 
