@@ -1,17 +1,16 @@
 from transformers import AutoTokenizer, AutoConfig
-from seer_attn import SeerAttnLlamaForCausalLM ## Sparse Prefill Modeling
-from seer_attn import SeerDecodingQwen3ForCausalLM ##  Sparse Decoding Modeling
+from seer_attn import SeerDecodingQwen2ForCausalLM ##  Sparse Decoding Modeling
 import torch
 
 ## SeerAttention-R: sparse decoding 
-model_name = "SeerAttention/SeerAttention-Decode-Qwen3-14B-AttnGates"
+model_name = "SeerAttention/SeerAttention-Decode-R1-Distill-Qwen-14B-AttnGates"
 config = AutoConfig.from_pretrained(model_name)
 tokenizer = AutoTokenizer.from_pretrained(
     config.base_model, 
     padding_side="left",
 )
 ## Token budget based sparsity selection. You can also use threshold method
-model = SeerDecodingQwen3ForCausalLM.from_pretrained(
+model = SeerDecodingQwen2ForCausalLM.from_pretrained(
     model_name,
     torch_dtype=torch.bfloat16,
     seerattn_sparsity_method='token_budget', 
