@@ -18,7 +18,9 @@ model = SeerDecodingQwen3ForCausalLM.from_pretrained(
     seerattn_token_budget = 4096, 
 ).cuda()
 
-prompt="What is the capital of France?"
+prompt="""
+Darrell and Allen's ages are in the ratio of 7:11. If their total age now is 162, calculate Allen's age 10 years from now.\nSolve the problem step by step. Wrap your final answer in \"\\boxed{}\".
+"""
 inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
 outputs = model.generate(
     inputs["input_ids"],
