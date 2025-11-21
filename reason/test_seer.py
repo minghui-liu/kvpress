@@ -4,7 +4,7 @@ from seer_attn import SeerDecodingQwen3ForCausalLM ##  Sparse Decoding Modeling
 import torch
 
 ## SeerAttention-R: sparse decoding 
-model_name = "SeerAttention/SeerAttention-Decode-Qwen3-4B-AttnGates"
+model_name = "SeerAttention/SeerAttention-Decode-R1-Distill-Qwen-14B-AttnGates"
 config = AutoConfig.from_pretrained(model_name)
 tokenizer = AutoTokenizer.from_pretrained(
     config.base_model, 
