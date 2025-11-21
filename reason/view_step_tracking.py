@@ -6,6 +6,7 @@ Tracks critical tokens (names, quantities, objects) and their retention.
 
 import json
 import argparse
+from collections import Counter
 from pathlib import Path
 from keyword_tracker import extract_keywords, tokenize_keywords
 from transformers import AutoTokenizer
@@ -93,47 +94,72 @@ def process_file(filepath: Path, tokenizer_cache: dict, output_lines: list):
         total_retained_tokens += num_retained
         total_steps += 1
         
-        # Extract and track critical tokens
+        # Extract and track critical tokens with frequency counting
         input_text = question.get('input_text', '')
         if input_text:
             keywords = extract_keywords(input_text)
             keyword_token_ids = tokenize_keywords(keywords, tokenizer)
             
-            # Get all critical token IDs
+            # Count frequency of each critical token ID in the input text
+            # Tokenize the entire input text to count occurrences
+            input_token_ids = tokenizer.encode(input_text, add_special_tokens=False)
+            input_token_frequency = Counter(input_token_ids)
+            
+            # Get all critical token IDs and their frequencies
             all_critical_token_ids = set()
+            critical_token_frequencies = {}  # token_id -> frequency
             for token_set in keyword_token_ids.values():
                 all_critical_token_ids.update(token_set)
+                # Count frequency of each critical token in input
+                for token_id in token_set:
+                    if token_id in input_token_frequency:
+                        critical_token_frequencies[token_id] = input_token_frequency[token_id]
+                    else:
+                        # If not found, at least count as 1 (shouldn't happen, but safety)
+                        critical_token_frequencies[token_id] = critical_token_frequencies.get(token_id, 0) + 1
             
-            # Get retained token IDs
-            retained_token_ids = set()
+            # Get retained token IDs with frequency
+            retained_token_ids = []
             if retained_tokens:
-                retained_token_ids = set(retained_tokens)
+                retained_token_ids = retained_tokens  # Keep as list to preserve frequency
             elif retained_tokens_text:
                 # Encode retained tokens text to get IDs
                 try:
                     for token_text in retained_tokens_text:
                         if token_text:
                             tokens = tokenizer.encode(token_text, add_special_tokens=False)
-                            retained_token_ids.update(tokens)
+                            retained_token_ids.extend(tokens)
                 except Exception:
                     pass
             
-            # Find which critical tokens are retained
-            retained_critical_token_ids = all_critical_token_ids & retained_token_ids
+            retained_token_frequency = Counter(retained_token_ids)
             
-            # Get the actual keyword strings that were retained
+            # Count frequency of retained critical tokens
+            # For each critical token ID, count how many times it appears in retained tokens
+            num_critical_retained = 0
+            for token_id in all_critical_token_ids:
+                if token_id in retained_token_frequency:
+                    num_critical_retained += retained_token_frequency[token_id]
+            
+            # Count total frequency of critical tokens in input
+            num_critical_total = sum(critical_token_frequencies.values())
+            
+            # Get the actual keyword strings that were retained (with frequency info)
             # A keyword is considered retained if at least one of its tokens is retained
             retained_critical_keywords = {}
             for key_type, keyword_list in keywords.items():
                 retained_keywords = []
                 for keyword in keyword_list:
-                    keyword_tokens = set(tokenizer.encode(keyword, add_special_tokens=False))
-                    if keyword_tokens & retained_critical_token_ids:
-                        retained_keywords.append(keyword)
+                    keyword_tokens = tokenizer.encode(keyword, add_special_tokens=False)
+                    # Check if any token of this keyword is retained
+                    if any(tid in retained_token_frequency for tid in keyword_tokens):
+                        # Count how many times this keyword appears in input
+                        keyword_freq = input_text.lower().count(keyword.lower())
+                        if keyword_freq > 1:
+                            retained_keywords.append(f"{keyword}({keyword_freq}x)")
+                        else:
+                            retained_keywords.append(keyword)
                 retained_critical_keywords[key_type] = retained_keywords
-            
-            num_critical_retained = len(retained_critical_token_ids)
-            num_critical_total = len(all_critical_token_ids)
             
             total_critical_retained_tokens += num_critical_retained
             total_critical_tokens += num_critical_total
