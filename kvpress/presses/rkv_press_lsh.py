@@ -199,11 +199,12 @@ class RKVLSHPress(ScorerPress):
         # Use matmul instead of einsum for better performance
         # einsum("bhqd,dk->bhqk") is equivalent to matmul after reshaping
         # Reshape keys_flat: [B, H, Q, D] -> [B*H*Q, D]
-        keys_reshaped = keys_flat.view(-1, head_dim)  # [B*H*Q, D]
+        # Use reshape instead of view to handle non-contiguous tensors
+        keys_reshaped = keys_flat.reshape(-1, head_dim)  # [B*H*Q, D]
         # matmul: [B*H*Q, D] @ [D, K] -> [B*H*Q, K]
         hash_bits = torch.matmul(keys_reshaped, self.proj_matrix)  # [B*H*Q, K]
         # Reshape back: [B*H*Q, K] -> [B, H, Q, K]
-        hash_bits = hash_bits.view(bsz, num_key_value_heads, -1, self.n_hash_buckets)
+        hash_bits = hash_bits.reshape(bsz, num_key_value_heads, -1, self.n_hash_buckets)
         hash_codes = (hash_bits > 0).int()
         # Cache powers_of_two device transfer - only move if device changed
         device_str = str(hash_codes.device)
