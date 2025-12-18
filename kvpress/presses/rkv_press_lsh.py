@@ -221,7 +221,8 @@ class RKVLSHPress(ScorerPress):
             self.cos_bucket_device != device_str):
             self.cos_bucket_cached = self.cos_hamming_distance_bucket.to(keys.device)
             self.cos_bucket_device = device_str
-        cos_bucket = self.cos_bucket_cached  # [2**n_hash_buckets, 2**n_hash_buckets]
+        # Ensure cos_bucket has the same dtype as counts (bfloat16)
+        cos_bucket = self.cos_bucket_cached.to(torch.bfloat16)  # [2**n_hash_buckets, 2**n_hash_buckets]
         
         # Fully vectorized computation on GPU - no CPU transfers, no Python loops
         # Shape: hash_codes_int is [B, H, Q]
