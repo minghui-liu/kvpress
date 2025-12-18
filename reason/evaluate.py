@@ -259,6 +259,7 @@ def evaluate(
         if press_name=="rkvlsh" and press is not None:
             press.n_hash_buckets=n_hash_buckets
             press.lam = lam
+            press.initialize_buckets(device=device)
 
 
         # Initialize pipeline with the correct attention implementation

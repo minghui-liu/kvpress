@@ -29,6 +29,14 @@ class RKVLSHPress(ScorerPress):
     kernel_size: int = 5
     n_hash_buckets: int=6
     cos_hamming_distance_bucket: torch.Tensor=None
+    powers_of_two: torch.Tensor=None
+    num_buckets: int=None
+    proj_matrix: torch.Tensor=None  # Cached projection matrix for LSH
+    proj_matrix_head_dim: int=None  # Track head_dim for which proj_matrix was created
+    cos_bucket_cached: torch.Tensor=None  # Cached cos_bucket on current device
+    cos_bucket_device: str=None  # Track device for cached cos_bucket
+    powers_of_two_cached: torch.Tensor=None  # Cached powers_of_two on current device
+    powers_of_two_device: str=None  # Track device for cached powers_of_two
     lam: float = 0.1
 
     def __post_init__(self):
@@ -45,6 +53,31 @@ class RKVLSHPress(ScorerPress):
         # Tokenizer for decoding tokens (will be set during inference)
         self.tokenizer = None
         self.input_tokens = None 
+
+    def initialize_buckets(self, device=None):
+        """
+        Initialize cos_hamming_distance_bucket on the specified device.
+        If device is None, uses CUDA if available, otherwise CPU.
+        """
+        # Determine device: use provided device, or CUDA if available, else CPU
+        if device is None:
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+        
+        # initialize cos_hamming_distance_bucket on the specified device
+        buckets = torch.arange(2**self.n_hash_buckets, device=device)
+        a = buckets.view(-1, 1)  # [N, 1]
+        b = buckets.view(1, -1)  # [1, N]
+        xor_vals = a ^ b
+        # Use efficient bitwise popcount instead of manual loop
+        # This counts the number of set bits (Hamming weight) in each element
+        hamming = torch.bitwise_popcount(xor_vals).to(torch.int64)
+        self.cos_hamming_distance_bucket = torch.cos(hamming / self.n_hash_buckets)
+        # Use bit shifting instead of exponentiation for faster computation
+        # 1 << [0, 1, 2, ...] = [1, 2, 4, 8, ...] = [2^0, 2^1, 2^2, ...]
+        # Bit shifting is faster than exponentiation, compute as int then convert to bfloat16
+        arange = torch.arange(self.n_hash_buckets, device=device, dtype=torch.int64)
+        self.powers_of_two = (torch.tensor(1, device=device, dtype=torch.int64) << arange).to(torch.bfloat16)
+        self.num_buckets = 2 ** self.n_hash_buckets
 
     @staticmethod
     def compute_window_attention(module, hidden_states, keys, window_size, position_embeddings):
@@ -130,53 +163,90 @@ class RKVLSHPress(ScorerPress):
         # redundency = keys_similarity.mean(dim=-1)  # Average over the key dimension
         # redundency = F.softmax(redundency, dim=-1, dtype=torch.float32).to(scores.dtype)
  
-
         ### Modified Algorithm: implement LSH over that
         keys_flat = keys.view(bsz, num_key_value_heads, -1, keys.shape[-1])
         keys_flat = keys_flat[:, :, : -self.window_size, :]  # Exclude the last window_size keys
 
-        if self.cos_hamming_distance_bucket is None:
-            buckets=torch.arange(2**self.n_hash_buckets)
-            a = buckets.view(-1, 1)  # [N, 1]
-            b = buckets.view(1, -1)  # [1, N]
-            xor_vals = a ^ b
-            hamming = torch.zeros_like(xor_vals, dtype=torch.int64)
-            temp = xor_vals.clone()
-            while True:
-                nonzero_mask = temp != 0
-                if not nonzero_mask.any():
-                    break
-                hamming += (temp & 1)
-                temp = temp >> 1
-            self.cos_hamming_distance_bucket=torch.cos(hamming/self.n_hash_buckets)
-
-        # Construct LSH buckets
-        proj_matrix = torch.randn(keys_flat.shape[-1],self.n_hash_buckets, device=keys.device).to(keys_flat.dtype)  # Random projection matrix
-        # Dixi: I use random projection here has hash function for easiest implementation
-        hash_bits = torch.einsum("bhqd,dk->bhqk", keys_flat, proj_matrix)
+        # Construct LSH buckets with cached projection matrix
+        head_dim = keys_flat.shape[-1]
+        device = keys.device
+        dtype = keys_flat.dtype
+        
+        # Cache projection matrix to avoid recreating it every time
+        # Only recreate if head_dim changed (e.g., different model) or device/dtype mismatch
+        if (self.proj_matrix is None or 
+            self.proj_matrix_head_dim != head_dim or 
+            str(self.proj_matrix.device) != str(device) or
+            self.proj_matrix.dtype != dtype):
+            self.proj_matrix = torch.randn(
+                head_dim, self.n_hash_buckets, 
+                device=device, dtype=dtype
+            )
+            self.proj_matrix_head_dim = head_dim
+        
+        # Use matmul instead of einsum for better performance
+        # einsum("bhqd,dk->bhqk") is equivalent to matmul after reshaping
+        # Reshape keys_flat: [B, H, Q, D] -> [B*H*Q, D]
+        keys_reshaped = keys_flat.view(-1, head_dim)  # [B*H*Q, D]
+        # matmul: [B*H*Q, D] @ [D, K] -> [B*H*Q, K]
+        hash_bits = torch.matmul(keys_reshaped, self.proj_matrix)  # [B*H*Q, K]
+        # Reshape back: [B*H*Q, K] -> [B, H, Q, K]
+        hash_bits = hash_bits.view(bsz, num_key_value_heads, -1, self.n_hash_buckets)
         hash_codes = (hash_bits > 0).int()
-        powers_of_two = 2 ** torch.arange(self.n_hash_buckets, device=keys.device, dtype=torch.bfloat16)
+        # Cache powers_of_two device transfer - only move if device changed
+        device_str = str(hash_codes.device)
+        if (self.powers_of_two_cached is None or 
+            self.powers_of_two_device != device_str):
+            self.powers_of_two_cached = self.powers_of_two.to(hash_codes.device)
+            self.powers_of_two_device = device_str
+        powers_of_two = self.powers_of_two_cached
         hash_codes_int = torch.sum(hash_codes * powers_of_two, dim=-1)  # [B, H, Q]
 
-        redundancy= torch.zeros_like(hash_codes_int, dtype=torch.bfloat16)  # [B, H, Q]
-        for b in range(bsz):
-            for h in range(num_key_value_heads):
-                # calculate count in each bucket
-                codes= hash_codes_int[b, h]
-                counts=torch.zeros(2**self.n_hash_buckets, device=keys_flat.device, dtype=torch.int32)
-                for bucket_number in torch.arange(2**self.n_hash_buckets):
-                    counts[bucket_number] = torch.sum(codes == bucket_number).item()
-                total_counts= counts.sum().item()
-                avg_cosine = torch.zeros(2**self.n_hash_buckets, device=hash_codes_int.device, dtype=torch.bfloat16)
-                for bucket_number in range(2**self.n_hash_buckets):
-                    weighted_sum = (counts * self.cos_hamming_distance_bucket.to(keys.device)[bucket_number]).sum()
-                    avg_cosine[bucket_number] = weighted_sum / total_counts if total_counts > 0 else 0.0
-                redundancy[b, h] = avg_cosine[codes.long()]
+        # Cache cos_bucket device transfer - only move if device changed
+        device_str = str(keys.device)
+        if (self.cos_bucket_cached is None or 
+            self.cos_bucket_device != device_str):
+            self.cos_bucket_cached = self.cos_hamming_distance_bucket.to(keys.device)
+            self.cos_bucket_device = device_str
+        cos_bucket = self.cos_bucket_cached  # [2**n_hash_buckets, 2**n_hash_buckets]
+        
+        # Fully vectorized computation on GPU - no CPU transfers, no Python loops
+        # Shape: hash_codes_int is [B, H, Q]
+        bsz, num_heads, q_len = hash_codes_int.shape
+        
+        # Flatten for batch processing: [B*H, Q]
+        codes_flat = hash_codes_int.view(-1, q_len).long()  # [B*H, Q]
+        
+        # Vectorized bucket counting using scatter_add (fully GPU-accelerated)
+        # Count tokens in each bucket for each batch-head: [B*H, num_buckets]
+        counts = torch.zeros(bsz * num_heads, self.num_buckets, device=codes_flat.device, dtype=torch.bfloat16)
+        counts.scatter_add_(1, codes_flat, torch.ones_like(codes_flat, dtype=torch.bfloat16))
+        
+        # Compute total counts per batch-head: [B*H, 1]
+        total_counts = counts.sum(dim=1, keepdim=True)  # [B*H, 1]
+        
+        # Compute weighted average cosine for each bucket: [B*H, num_buckets]
+        # For each batch-head b, bucket k: avg_cosine[b, k] = sum(counts[b, i] * cos_bucket[i, k]) / total_counts[b]
+        # This is: (counts @ cos_bucket) / total_counts
+        avg_cosine = (counts @ cos_bucket) / (total_counts + 1e-8)  # [B*H, num_buckets]
+        
+        # Map each token's bucket code to its average cosine value
+        # Use indexing with arange - optimized for this pattern
+        # avg_cosine: [B*H, num_buckets], codes_flat: [B*H, Q]
+        # We want: redundancy_flat[b, q] = avg_cosine[b, codes_flat[b, q]]
+        # Create batch indices and use advanced indexing (faster than gather for this case)
+        batch_idx = torch.arange(bsz * num_heads, device=codes_flat.device)[:, None]  # [B*H, 1]
+        redundancy_flat = avg_cosine[batch_idx, codes_flat]  # [B*H, Q]
+        
+        # Reshape back to [B, H, Q]
+        redundancy = redundancy_flat.view(bsz, num_heads, q_len)
         redundancy = F.softmax(redundancy, dim=-1, dtype=torch.bfloat16).to(scores.dtype)
 
         scores = self.lam * scores + (1 - self.lam) * redundancy
         # Add back the observation window. Use max score to make sure the window is not pruned.
-        scores = F.pad(scores, (0, self.window_size), value=scores.max().item())
+        # Keep max computation on GPU, only convert to Python scalar for padding value (required by F.pad)
+        max_score = scores.max()
+        scores = F.pad(scores, (0, self.window_size), value=float(max_score))
         return scores
     
 
