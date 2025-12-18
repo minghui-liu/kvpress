@@ -197,10 +197,15 @@ class RKVLSHPress(ScorerPress):
             )
             self.proj_matrix_head_dim = head_dim
         
-        # Use einsum for hashing projection (matching paper notation)
-        # einsum("bhqd,dk->bhqk"): project keys to hash bits
-        hash_bits = torch.einsum("bhqd,dk->bhqk", keys_flat, self.proj_matrix)
-        hash_codes = (hash_bits > 0).int()
+        # Optimized hashing projection: use matmul which is faster than einsum for this pattern
+        # einsum("bhqd,dk->bhqk") is equivalent to matmul after reshaping
+        # For small sequences, matmul is often faster than einsum
+        q_len_flat, head_dim = keys_flat.shape[2], keys_flat.shape[3]
+        keys_reshaped = keys_flat.reshape(-1, head_dim)  # [B*H*Q, D]
+        hash_bits_flat = torch.matmul(keys_reshaped, self.proj_matrix)  # [B*H*Q, K] - faster than einsum
+        hash_bits = hash_bits_flat.reshape(bsz, num_key_value_heads, q_len_flat, self.n_hash_buckets)  # [B, H, Q, K]
+        # Convert to binary codes and compute integer hash codes in one step
+        hash_codes = (hash_bits > 0).int()  # [B, H, Q, K]
         # Cache powers_of_two device transfer - only move if device changed
         device_str = str(hash_codes.device)
         if (self.powers_of_two_cached is None or 
@@ -208,6 +213,7 @@ class RKVLSHPress(ScorerPress):
             self.powers_of_two_cached = self.powers_of_two.to(hash_codes.device)
             self.powers_of_two_device = device_str
         powers_of_two = self.powers_of_two_cached
+        # Compute hash codes as integers: sum of binary bits weighted by powers of 2
         hash_codes_int = torch.sum(hash_codes * powers_of_two, dim=-1)  # [B, H, Q]
 
         # Cache cos_bucket device transfer - only move if device or dtype changed
@@ -237,17 +243,13 @@ class RKVLSHPress(ScorerPress):
         total_counts = counts.sum(dim=1, keepdim=True)  # [B*H, 1]
         
         # According to paper: S_i' = (Σ_{i≠j} c_j cos(Hamming(i,j)/b)) / (Σ_j c_j)
-        # We need to exclude self-similarity (i=j) from the sum
-        # Optimized computation:
-        # 1. Compute full sum: counts @ cos_bucket (includes self-similarity)
-        # 2. Subtract self-similarity: for bucket i, cos(Hamming(i,i)/b) = cos(0) = 1.0
-        # 3. So we subtract counts (which is counts[i] * 1.0 for each i)
-        avg_cosine_full = counts @ cos_bucket  # [B*H, num_buckets]
-        # Subtract self-similarity terms (diagonal of cos_bucket is 1.0)
-        avg_cosine = (avg_cosine_full - counts) / (total_counts + 1e-8)  # [B*H, num_buckets]
+        # Optimized: compute (counts @ cos_bucket - counts) / total_counts in one step
+        # This excludes self-similarity (diagonal terms where cos(0) = 1.0)
+        # Combined operation to reduce memory traffic
+        avg_cosine = (counts @ cos_bucket - counts) / (total_counts + 1e-8)  # [B*H, num_buckets]
         
         # Map each token's bucket code to its average cosine value
-        # Use gather for efficient indexing: gather along dim=1
+        # Use gather for efficient indexing
         redundancy_flat = avg_cosine.gather(1, codes_flat)  # [B*H, Q]
         
         # Reshape back to [B, H, Q]
