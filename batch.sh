@@ -1,7 +1,7 @@
 nvidia-smi
 
 export HF_HOME=../cache/
-export HUGGINGFACE_TOKEN="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"
+# export HUGGINGFACE_TOKEN="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"
 export CUDA_LAUNCH_BLOCKING=1
 huggingface-cli login --token $HUGGINGFACE_TOKEN
 set -euo pipefail
