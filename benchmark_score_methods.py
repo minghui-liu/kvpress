@@ -21,7 +21,7 @@ class MockConfig:
     head_dim: int = 128
     hidden_size: int = 4096
     model_type: str = "llama"
-    name_or_path: str = "meta-llama/Meta-Llama-3.1-8B-Instruct"
+    name_or_path: str = "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
 
 
 class MockAttentionModule(nn.Module):
