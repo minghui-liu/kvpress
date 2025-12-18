@@ -133,12 +133,13 @@ def main():
     print("\nDevice:", device)
     print("Dtype:", dtype)
     
-    # Test configurations
+    # Test configurations - using larger token counts to see LSH advantage
     test_configs = [
-        {"bsz": 1, "q_len": 256, "name": "Small (256 tokens)"},
         {"bsz": 1, "q_len": 512, "name": "Medium (512 tokens)"},
         {"bsz": 1, "q_len": 1024, "name": "Large (1024 tokens)"},
-        {"bsz": 2, "q_len": 512, "name": "Batch=2 (512 tokens)"},
+        {"bsz": 1, "q_len": 2048, "name": "Very Large (2048 tokens)"},
+        {"bsz": 1, "q_len": 4096, "name": "Huge (4096 tokens)"},
+        {"bsz": 2, "q_len": 2048, "name": "Batch=2 (2048 tokens)"},
     ]
     
     # Create press instances
@@ -156,7 +157,8 @@ def main():
         lam=0.1,
     )
     
-    # Initialize buckets for RKVLSHPress
+    # Initialize buckets for RKVLSHPress ONCE before all benchmarks
+    # This is the "fixed bucket counting" initialization - done outside the loop
     rkv_lsh_press.initialize_buckets(device=device)
     
     results = []

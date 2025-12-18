@@ -35,6 +35,7 @@ class RKVLSHPress(ScorerPress):
     proj_matrix_head_dim: int=None  # Track head_dim for which proj_matrix was created
     cos_bucket_cached: torch.Tensor=None  # Cached cos_bucket on current device
     cos_bucket_device: str=None  # Track device for cached cos_bucket
+    cos_bucket_dtype: torch.dtype=None  # Track dtype for cached cos_bucket
     powers_of_two_cached: torch.Tensor=None  # Cached powers_of_two on current device
     powers_of_two_device: str=None  # Track device for cached powers_of_two
     lam: float = 0.1
@@ -196,15 +197,9 @@ class RKVLSHPress(ScorerPress):
             )
             self.proj_matrix_head_dim = head_dim
         
-        # Use matmul instead of einsum for better performance
-        # einsum("bhqd,dk->bhqk") is equivalent to matmul after reshaping
-        # Reshape keys_flat: [B, H, Q, D] -> [B*H*Q, D]
-        # Use reshape instead of view to handle non-contiguous tensors
-        keys_reshaped = keys_flat.reshape(-1, head_dim)  # [B*H*Q, D]
-        # matmul: [B*H*Q, D] @ [D, K] -> [B*H*Q, K]
-        hash_bits = torch.matmul(keys_reshaped, self.proj_matrix)  # [B*H*Q, K]
-        # Reshape back: [B*H*Q, K] -> [B, H, Q, K]
-        hash_bits = hash_bits.reshape(bsz, num_key_value_heads, -1, self.n_hash_buckets)
+        # Use einsum for hashing projection (matching paper notation)
+        # einsum("bhqd,dk->bhqk"): project keys to hash bits
+        hash_bits = torch.einsum("bhqd,dk->bhqk", keys_flat, self.proj_matrix)
         hash_codes = (hash_bits > 0).int()
         # Cache powers_of_two device transfer - only move if device changed
         device_str = str(hash_codes.device)
@@ -215,14 +210,16 @@ class RKVLSHPress(ScorerPress):
         powers_of_two = self.powers_of_two_cached
         hash_codes_int = torch.sum(hash_codes * powers_of_two, dim=-1)  # [B, H, Q]
 
-        # Cache cos_bucket device transfer - only move if device changed
+        # Cache cos_bucket device transfer - only move if device or dtype changed
         device_str = str(keys.device)
+        dtype = keys.dtype  # Use the same dtype as keys (typically bfloat16)
         if (self.cos_bucket_cached is None or 
-            self.cos_bucket_device != device_str):
-            self.cos_bucket_cached = self.cos_hamming_distance_bucket.to(keys.device)
+            self.cos_bucket_device != device_str or
+            self.cos_bucket_dtype != dtype):
+            self.cos_bucket_cached = self.cos_hamming_distance_bucket.to(keys.device).to(dtype)
             self.cos_bucket_device = device_str
-        # Ensure cos_bucket has the same dtype as counts (bfloat16)
-        cos_bucket = self.cos_bucket_cached.to(torch.bfloat16)  # [2**n_hash_buckets, 2**n_hash_buckets]
+            self.cos_bucket_dtype = dtype
+        cos_bucket = self.cos_bucket_cached  # [2**n_hash_buckets, 2**n_hash_buckets]
         
         # Fully vectorized computation on GPU - no CPU transfers, no Python loops
         # Shape: hash_codes_int is [B, H, Q]
@@ -239,18 +236,19 @@ class RKVLSHPress(ScorerPress):
         # Compute total counts per batch-head: [B*H, 1]
         total_counts = counts.sum(dim=1, keepdim=True)  # [B*H, 1]
         
-        # Compute weighted average cosine for each bucket: [B*H, num_buckets]
-        # For each batch-head b, bucket k: avg_cosine[b, k] = sum(counts[b, i] * cos_bucket[i, k]) / total_counts[b]
-        # This is: (counts @ cos_bucket) / total_counts
-        avg_cosine = (counts @ cos_bucket) / (total_counts + 1e-8)  # [B*H, num_buckets]
+        # According to paper: S_i' = (Σ_{i≠j} c_j cos(Hamming(i,j)/b)) / (Σ_j c_j)
+        # We need to exclude self-similarity (i=j) from the sum
+        # Optimized computation:
+        # 1. Compute full sum: counts @ cos_bucket (includes self-similarity)
+        # 2. Subtract self-similarity: for bucket i, cos(Hamming(i,i)/b) = cos(0) = 1.0
+        # 3. So we subtract counts (which is counts[i] * 1.0 for each i)
+        avg_cosine_full = counts @ cos_bucket  # [B*H, num_buckets]
+        # Subtract self-similarity terms (diagonal of cos_bucket is 1.0)
+        avg_cosine = (avg_cosine_full - counts) / (total_counts + 1e-8)  # [B*H, num_buckets]
         
         # Map each token's bucket code to its average cosine value
-        # Use indexing with arange - optimized for this pattern
-        # avg_cosine: [B*H, num_buckets], codes_flat: [B*H, Q]
-        # We want: redundancy_flat[b, q] = avg_cosine[b, codes_flat[b, q]]
-        # Create batch indices and use advanced indexing (faster than gather for this case)
-        batch_idx = torch.arange(bsz * num_heads, device=codes_flat.device)[:, None]  # [B*H, 1]
-        redundancy_flat = avg_cosine[batch_idx, codes_flat]  # [B*H, Q]
+        # Use gather for efficient indexing: gather along dim=1
+        redundancy_flat = avg_cosine.gather(1, codes_flat)  # [B*H, Q]
         
         # Reshape back to [B, H, Q]
         redundancy = redundancy_flat.view(bsz, num_heads, q_len)
