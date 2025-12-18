@@ -26,11 +26,16 @@ class MockConfig:
 
 class MockAttentionModule(nn.Module):
     """Mock attention module for testing."""
-    def __init__(self):
+    def __init__(self, hidden_size: int = 4096, head_dim: int = 128, num_heads: int = 32):
         super().__init__()
         self.config = MockConfig()
-        self.head_dim = self.config.head_dim
+        self.config.hidden_size = hidden_size
+        self.head_dim = head_dim
+        self.config.head_dim = head_dim
         self.layer_idx = 0
+        # Create q_proj layer for compute_window_attention
+        # q_proj projects hidden_size -> num_heads * head_dim
+        self.q_proj = nn.Linear(hidden_size, num_heads * head_dim, bias=False)
 
 
 def create_dummy_inputs(
@@ -152,9 +157,6 @@ def main():
     # Initialize buckets for RKVLSHPress
     rkv_lsh_press.initialize_buckets(device=device)
     
-    # Create mock module
-    module = MockAttentionModule()
-    
     results = []
     
     for config in test_configs:
@@ -169,6 +171,15 @@ def main():
             device=device,
             dtype=dtype,
         )
+        
+        # Create mock module with proper dimensions for this configuration
+        module = MockAttentionModule(
+            hidden_size=hidden_states.shape[-1],
+            head_dim=keys.shape[-1],
+            num_heads=32
+        )
+        module = module.to(device).to(dtype)
+        module.eval()  # Set to eval mode
         
         print("Input shapes:")
         print("  keys:", keys.shape)
