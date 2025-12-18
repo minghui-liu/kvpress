@@ -56,9 +56,11 @@ def create_dummy_inputs(
     hidden_states = torch.randn(bsz, q_len, hidden_size, device=device, dtype=dtype)
     
     # Create position embeddings (cos, sin) for RoPE
-    # Shape: [bsz, q_len, head_dim // 2] for cos and sin
-    cos = torch.randn(bsz, q_len, head_dim // 2, device=device, dtype=dtype)
-    sin = torch.randn(bsz, q_len, head_dim // 2, device=device, dtype=dtype)
+    # Shape: [bsz, q_len, head_dim] for cos and sin (they need to match head_dim for broadcasting)
+    # Note: In real RoPE, cos/sin are typically [bsz, q_len, head_dim//2], but they get
+    # repeated/interleaved to match head_dim. For simplicity in benchmarking, we use full head_dim.
+    cos = torch.randn(bsz, q_len, head_dim, device=device, dtype=dtype)
+    sin = torch.randn(bsz, q_len, head_dim, device=device, dtype=dtype)
     position_embeddings = (cos, sin)
     
     # Create kwargs dict
