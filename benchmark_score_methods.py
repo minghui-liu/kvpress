@@ -82,41 +82,49 @@ def benchmark_score_method(
     kwargs,
     num_warmup: int = 10,
     num_iterations: int = 100,
+    num_runs: int = 3,
     device: str = "cuda",
 ):
-    """Benchmark a single score() method."""
-    # Warmup runs
-    for _ in range(num_warmup):
-        with torch.no_grad():
-            _ = press.score(module, hidden_states, keys, values, attentions, False, kwargs)
+    """Benchmark a single score() method with multiple runs for better statistics."""
+    all_times = []
     
-    # Synchronize if using CUDA
-    if device.startswith("cuda"):
-        torch.cuda.synchronize()
-    
-    # Actual timing
-    times = []
-    for _ in range(num_iterations):
+    for _ in range(num_runs):
+        # Warmup runs for each run
+        for _ in range(num_warmup):
+            with torch.no_grad():
+                _ = press.score(module, hidden_states, keys, values, attentions, False, kwargs)
+        
+        # Synchronize if using CUDA
         if device.startswith("cuda"):
             torch.cuda.synchronize()
         
-        start_time = time.perf_counter()
-        with torch.no_grad():
-            _ = press.score(module, hidden_states, keys, values, attentions, False, kwargs)
+        # Actual timing for this run
+        run_times = []
+        for _ in range(num_iterations):
+            if device.startswith("cuda"):
+                torch.cuda.synchronize()
+            
+            start_time = time.perf_counter()
+            with torch.no_grad():
+                _ = press.score(module, hidden_states, keys, values, attentions, False, kwargs)
+            
+            if device.startswith("cuda"):
+                torch.cuda.synchronize()
+            
+            end_time = time.perf_counter()
+            run_times.append((end_time - start_time) * 1000)  # Convert to milliseconds
         
-        if device.startswith("cuda"):
-            torch.cuda.synchronize()
-        
-        end_time = time.perf_counter()
-        times.append((end_time - start_time) * 1000)  # Convert to milliseconds
+        all_times.extend(run_times)
     
+    # Aggregate statistics across all runs
     return {
-        "mean_ms": statistics.mean(times),
-        "median_ms": statistics.median(times),
-        "std_ms": statistics.stdev(times) if len(times) > 1 else 0.0,
-        "min_ms": min(times),
-        "max_ms": max(times),
-        "times": times,
+        "mean_ms": statistics.mean(all_times),
+        "median_ms": statistics.median(all_times),
+        "std_ms": statistics.stdev(all_times) if len(all_times) > 1 else 0.0,
+        "min_ms": min(all_times),
+        "max_ms": max(all_times),
+        "times": all_times,
+        "num_samples": len(all_times),
     }
 
 
@@ -133,13 +141,15 @@ def main():
     print("\nDevice:", device)
     print("Dtype:", dtype)
     
-    # Test configurations - using larger token counts to see LSH advantage
+    # Test configurations - focus on long sequences for reasoning models
+    # Reasoning models typically generate very long sequences (thousands of tokens)
     test_configs = [
-        {"bsz": 1, "q_len": 512, "name": "Medium (512 tokens)"},
-        {"bsz": 1, "q_len": 1024, "name": "Large (1024 tokens)"},
-        {"bsz": 1, "q_len": 2048, "name": "Very Large (2048 tokens)"},
-        {"bsz": 1, "q_len": 4096, "name": "Huge (4096 tokens)"},
-        {"bsz": 2, "q_len": 2048, "name": "Batch=2 (2048 tokens)"},
+        {"bsz": 1, "q_len": 2048, "name": "Long (2048 tokens)"},
+        {"bsz": 1, "q_len": 4096, "name": "Very Long (4096 tokens)"},
+        {"bsz": 1, "q_len": 8192, "name": "Extremely Long (8192 tokens)"},
+        {"bsz": 1, "q_len": 16384, "name": "Ultra Long (16384 tokens)"},
+        {"bsz": 2, "q_len": 4096, "name": "Batch=2 (4096 tokens)"},
+        {"bsz": 2, "q_len": 8192, "name": "Batch=2 (8192 tokens)"},
     ]
     
     # Create press instances
@@ -190,18 +200,33 @@ def main():
         print("  values:", values.shape)
         print("  hidden_states:", hidden_states.shape)
         
+        # Determine number of iterations based on sequence length (more for larger sequences)
+        # For very long sequences, use more iterations for better statistics
+        if config["q_len"] >= 16384:
+            num_iterations = 50  # Fewer iterations for ultra-long sequences (they take longer)
+            num_runs = 5
+        elif config["q_len"] >= 8192:
+            num_iterations = 100
+            num_runs = 5
+        elif config["q_len"] >= 4096:
+            num_iterations = 150
+            num_runs = 4
+        else:
+            num_iterations = 200
+            num_runs = 3
+        
         # Benchmark RKVPress
-        print("\nBenchmarking RKVPress...")
+        print(f"\nBenchmarking RKVPress ({num_runs} runs, {num_iterations} iterations each)...")
         rkv_results = benchmark_score_method(
             rkv_press, module, keys, values, hidden_states, attentions, kwargs,
-            num_warmup=10, num_iterations=100, device=device
+            num_warmup=10, num_iterations=num_iterations, num_runs=num_runs, device=device
         )
         
         # Benchmark RKVLSHPress
-        print("Benchmarking RKVLSHPress...")
+        print(f"Benchmarking RKVLSHPress ({num_runs} runs, {num_iterations} iterations each)...")
         rkv_lsh_results = benchmark_score_method(
             rkv_lsh_press, module, keys, values, hidden_states, attentions, kwargs,
-            num_warmup=10, num_iterations=100, device=device
+            num_warmup=10, num_iterations=num_iterations, num_runs=num_runs, device=device
         )
         
         # Print results
@@ -220,31 +245,43 @@ def main():
         print(f"    Min:    {rkv_lsh_results['min_ms']:.3f} ms")
         print(f"    Max:    {rkv_lsh_results['max_ms']:.3f} ms")
         
-        # Calculate speedup
+        # Calculate speedup (always show as "X times faster/slower")
+        # speedup > 1 means RKVLSHPress is faster
         speedup = rkv_results['mean_ms'] / rkv_lsh_results['mean_ms']
         if speedup > 1:
-            print(f"\n  RKVLSHPress is {speedup:.2f}x FASTER than RKVPress")
+            print(f"\n  ✓ RKVLSHPress is {speedup:.2f}x FASTER than RKVPress")
+            speedup_display = f"{speedup:.2f}x faster"
         else:
-            print(f"\n  RKVLSHPress is {1/speedup:.2f}x SLOWER than RKVPress")
+            slowdown = 1 / speedup
+            print(f"\n  ✗ RKVLSHPress is {slowdown:.2f}x SLOWER than RKVPress")
+            speedup_display = f"{slowdown:.2f}x slower"
         
         results.append({
             "config": config["name"],
             "rkv": rkv_results,
             "rkv_lsh": rkv_lsh_results,
             "speedup": speedup,
+            "speedup_display": speedup_display,
         })
     
     # Summary table
     print("\n" + "=" * 80)
     print("SUMMARY TABLE")
     print("=" * 80)
-    print(f"{'Configuration':<30} {'RKVPress (ms)':<15} {'RKVLSHPress (ms)':<18} {'Speedup':<10}")
-    print("-" * 80)
+    print(f"{'Configuration':<30} {'RKVPress (ms)':<15} {'RKVLSHPress (ms)':<18} {'Speedup':<20}")
+    print("-" * 85)
     for result in results:
+        speedup_val = result['speedup']
+        if speedup_val > 1:
+            speedup_str = f"{speedup_val:.2f}x faster"
+        else:
+            slowdown = 1 / speedup_val
+            speedup_str = f"{slowdown:.2f}x slower"
+        
         print(f"{result['config']:<30} "
               f"{result['rkv']['mean_ms']:<15.3f} "
               f"{result['rkv_lsh']['mean_ms']:<18.3f} "
-              f"{result['speedup']:<10.2f}x")
+              f"{speedup_str:<20}")
     
     print("\n" + "=" * 80)
     print("Benchmark complete!")
