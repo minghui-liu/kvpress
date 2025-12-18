@@ -68,9 +68,21 @@ class RKVLSHPress(ScorerPress):
         a = buckets.view(-1, 1)  # [N, 1]
         b = buckets.view(1, -1)  # [1, N]
         xor_vals = a ^ b
-        # Use efficient bitwise popcount instead of manual loop
+        # Use efficient bitwise popcount - with fallback for older PyTorch versions
         # This counts the number of set bits (Hamming weight) in each element
-        hamming = torch.bitwise_popcount(xor_vals).to(torch.int64)
+        if hasattr(torch, 'bitwise_popcount'):
+            hamming = torch.bitwise_popcount(xor_vals).to(torch.int64)
+        else:
+            # Fallback: manual bit counting using bitwise operations (vectorized)
+            # This works for older PyTorch versions that don't have bitwise_popcount
+            hamming = torch.zeros_like(xor_vals, dtype=torch.int64)
+            temp = xor_vals.clone()
+            # Count bits by repeatedly shifting and masking
+            # This is O(log(max_value)) but fully vectorized on GPU
+            max_bits = self.n_hash_buckets
+            for _ in range(max_bits):
+                hamming += (temp & 1).long()
+                temp = temp >> 1
         self.cos_hamming_distance_bucket = torch.cos(hamming / self.n_hash_buckets)
         # Use bit shifting instead of exponentiation for faster computation
         # 1 << [0, 1, 2, ...] = [1, 2, 4, 8, ...] = [2^0, 2^1, 2^2, ...]
