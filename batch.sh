@@ -77,18 +77,19 @@ for budget in "${CACHE_BUDGETS[@]}"; do
       # Construct filename matching evaluate.py format exactly
       out_file="${RESULT_DIR}/${dataset}____${MODEL_FILE}__${PRESS_NAME}__budget${budget}__hash_bucket8__max_new_tokens${MAX_NEW_TOKENS}__lam${lambda_sanitized}__num_samples${NUM_SAMPLES}__sampling.jsonl"
       
-      # Also check for score file (evaluate.py checks score_filename for skip_existing)
+      # Check for score file first (evaluate.py checks score_filename for skip_existing)
+      # This is the primary check - if score file exists, evaluation is complete
       score_file="${RESULT_DIR}/${dataset}____${MODEL_FILE}__${PRESS_NAME}__budget${budget}__hash_bucket8__max_new_tokens${MAX_NEW_TOKENS}__lam${lambda_sanitized}__num_samples${NUM_SAMPLES}__sampling_score.json"
       
-      if [[ -f "$out_file" ]] || [[ -f "$score_file" ]]; then
-        existing_file=""
-        if [[ -f "$score_file" ]]; then
-          existing_file="score file: $(basename "$score_file")"
-        elif [[ -f "$out_file" ]]; then
-          existing_file="results file: $(basename "$out_file")"
-        fi
-        echo "    ✅ Skipping $dataset at budget $budget, lambda $lambda ($existing_file)"
+      if [[ -f "$score_file" ]]; then
+        echo "    ✅ Skipping $dataset at budget $budget, lambda $lambda (score file exists: $(basename "$score_file"))"
         continue
+      fi
+      
+      # Also check for results file as secondary check
+      if [[ -f "$out_file" ]]; then
+        echo "    ⚠️  Results file exists but no score file: $(basename "$out_file") - will rerun to generate score file"
+        # Continue anyway to regenerate score file
       fi
 
       echo "    ➡️  Running $dataset @ budget $budget, lambda $lambda"

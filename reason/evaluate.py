@@ -289,24 +289,29 @@ def evaluate(
             except ImportError:
                 pass
 
-        # Load model
+        # Load model and tokenizer
         if "SeerAttention" in model_name:
-            # Patch torch.load to handle CPU loading when CUDA is not available
-            # This is needed because SeerAttention library loads weights without map_location
+            # SeerAttention models: Load config first, then tokenizer from base_model
+            # This is the recommended approach per SeerAttention documentation
+            config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
+            tokenizer = AutoTokenizer.from_pretrained(
+                config.base_model, 
+                trust_remote_code=True,
+                padding_side="left",
+            )
+            # Load model after tokenizer
             model = SeerDecodingQwen2ForCausalLM.from_pretrained(
                         model_name,
                         torch_dtype=torch.bfloat16,
+                        trust_remote_code=True,
                         seerattn_sparsity_method='token_budget', 
                         seerattn_token_budget = cache_budget 
                     )
             model.to(device)
-            config = AutoConfig.from_pretrained(model_name)
-            tokenizer = AutoTokenizer.from_pretrained(
-                config.base_model, 
-                padding_side="left",
-            )
-        else:
-            # Use torch_dtype instead of dtype for AutoModelForCausalLM
+        elif "DeepSeek" in model_name or "Llama-3.1" in model_name or "Meta-Llama-3.1" in model_name:
+            # DeepSeek and Llama 3.1 models: Load tokenizer with trust_remote_code
+            # DeepSeek models are based on Llama, so they use Llama tokenizer
+            # Llama 3.1 models also need trust_remote_code for proper tokenizer loading
             model = AutoModelForCausalLM.from_pretrained(
                 model_name,
                 device_map="auto",
@@ -314,8 +319,30 @@ def evaluate(
                 torch_dtype="auto",
                 **model_kwargs,
             )
-            tokenizer = AutoTokenizer.from_pretrained(model_name, device_map="auto", trust_remote_code=True)
-        tokenizer.pad_token = tokenizer.eos_token
+            # Load tokenizer with trust_remote_code=True and padding_side="left" for generation
+            tokenizer = AutoTokenizer.from_pretrained(
+                model_name,
+                trust_remote_code=True,
+                padding_side="left",
+            )
+        else:
+            # Other models: Standard loading
+            model = AutoModelForCausalLM.from_pretrained(
+                model_name,
+                device_map="auto",
+                trust_remote_code=True,
+                torch_dtype="auto",
+                **model_kwargs,
+            )
+            tokenizer = AutoTokenizer.from_pretrained(
+                model_name, 
+                trust_remote_code=True,
+                device_map="auto"
+            )
+        
+        # Set pad token to eos token if not already set (required for generation)
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
 
         # Run generation on each context of the dataset
         # Results are written incrementally, so we don't need to store them in memory
@@ -537,8 +564,9 @@ def evaluate(
                 # Save generation_steps to save_obj
                 save_obj['generation_steps'] = generation_steps
                 
-                # Save to a separate detailed JSON file only if track_tokens is enabled
-                if not is_seer_attention_none and generation_steps:
+                # Save to a separate detailed JSON file ONLY if track_tokens is True
+                # Double-check track_tokens to ensure no tracking files are created when disabled
+                if track_tokens and not is_seer_attention_none and generation_steps:
                     step_tracking_file = save_filename.with_suffix('.step_tracking.json')
                     step_data = {
                         'question_index': i,
