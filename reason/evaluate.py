@@ -420,10 +420,22 @@ def evaluate(
             model_answer = extractor(response)
 
             peak_memory = torch.cuda.max_memory_allocated()
-            torch.cuda.empty_cache()
-            torch.cuda.reset_peak_memory_stats()
             memory_usage=peak_memory / 1024**3
             execution_time=time()-start
+            
+            # Aggressive memory cleanup after each sample
+            # Delete large tensors explicitly
+            del outputs
+            del inputs
+            
+            # Clear CUDA cache and reset stats
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+            torch.cuda.reset_peak_memory_stats()
+            
+            # Force Python garbage collection
+            import gc
+            gc.collect()
 
             # Get timing metrics from press if available
             timing_metrics = {}
@@ -550,7 +562,18 @@ def evaluate(
             with open(str(save_filename), "a", encoding='utf-8') as f:
                 f.write(json.dumps(save_obj) + "\n")
             
-            print(f"✅ [{i+1}/{len(ds)}] Saved result for question {i+1} to {save_filename.name}")
+            # Clear save_obj to free memory
+            del save_obj
+            
+            print(f"✅ [{i+1}/{len(ds)}] Saved result for question {i+1} to {save_filename.name} (Memory: {memory_usage:.2f} GB)")
+            
+            # Additional memory cleanup every 5 samples
+            if (i + 1) % 5 == 0:
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+                import gc
+                gc.collect()
+                print(f"   🧹 Memory cleanup after {i+1} samples")
         
         print(f"\n✅ All results saved to {save_filename}")
     # end of the if save_filename.exists()
