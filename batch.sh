@@ -15,7 +15,7 @@ MODEL_NAME="deepseek-ai/DeepSeek-R1-Distill-Llama-8B"
 # sanitize MODEL_NAME for filenames: replace "/" → "--"
 MODEL_FILE="${MODEL_NAME//\//--}"
 
-NUM_SAMPLES=30
+NUM_SAMPLES=10
 RANDOM_SEED=42            # default seed in evaluate.py
 MAX_NEW_TOKENS=16384
 
