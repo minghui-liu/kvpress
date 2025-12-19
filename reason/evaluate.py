@@ -250,7 +250,8 @@ def evaluate(
         if save_filename.exists():
             save_filename.unlink()
         # Delete step tracking file if it exists (will be recreated if track_tokens is True)
-        if save_filename.with_suffix('.step_tracking.json').exists():
+        # Only delete if we're about to create a new one (track_tokens is True)
+        if track_tokens and save_filename.with_suffix('.step_tracking.json').exists():
             save_filename.with_suffix('.step_tracking.json').unlink()
         # Load datasetf
         ds = load_dataset(hf_name, data_dir=data_dir, split=data_split)
@@ -361,7 +362,9 @@ def evaluate(
                 # Reset timing before generation
                 if press is not None and not isinstance(press, NonePress):
                     press.reset_timing()
-                    # Set tokenizer and input tokens for ranking data collection and per-step tracking
+                # Set tokenizer and input tokens only if token tracking is enabled
+                # This is needed for ranking data collection and per-step tracking
+                if track_tokens:
                     if hasattr(press, 'set_tokenizer_and_tokens'):
                         press.set_tokenizer_and_tokens(tokenizer, inputs["input_ids"][0])
                     # Also set tokenizer directly for per-step tracking (for all presses including FullPress)
@@ -514,9 +517,7 @@ def evaluate(
                 save_obj['keywords'] = keywords
                 save_obj['keyword_retention'] = keyword_retention
                 
-                # Collect per-step token tracking
-                # NonePress doesn't track generation steps
-                # Skip for SeerAttention with NonePress (simplified path)
+                # Collect per-step token tracking only if track_tokens is enabled
                 generation_steps = []
                 if not is_seer_attention_none and press is not None and not isinstance(press, NonePress) and hasattr(press, 'get_generation_steps'):
                     generation_steps = press.get_generation_steps()
@@ -524,7 +525,7 @@ def evaluate(
                 # Save generation_steps to save_obj
                 save_obj['generation_steps'] = generation_steps
                 
-                # Save to a separate detailed JSON file (skip for simplified path)
+                # Save to a separate detailed JSON file only if track_tokens is enabled
                 if not is_seer_attention_none and generation_steps:
                     step_tracking_file = save_filename.with_suffix('.step_tracking.json')
                     step_data = {
@@ -540,7 +541,9 @@ def evaluate(
                     with open(str(step_tracking_file), "a", encoding='utf-8') as step_f:
                         step_f.write(json.dumps(step_data, indent=2) + "\n")
             else:
-                # Skip token tracking - set empty values
+                # track_tokens is False - set empty tracking data
+                save_obj['keywords'] = {}
+                save_obj['keyword_retention'] = {}
                 save_obj['generation_steps'] = []
             
             # Write result incrementally after each example

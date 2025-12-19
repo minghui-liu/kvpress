@@ -102,7 +102,7 @@ for budget in "${CACHE_BUDGETS[@]}"; do
         --max_new_tokens="$MAX_NEW_TOKENS" \
         --n_hash_buckets=8 \
         --lam="$lambda" \
-        --track_tokens=False
+        --track_tokens=false
     done
   done
 done
