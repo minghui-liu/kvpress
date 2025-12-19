@@ -17,7 +17,7 @@ MODEL_FILE="${MODEL_NAME//\//--}"
 
 NUM_SAMPLES=15
 RANDOM_SEED=42            # default seed in evaluate.py
-MAX_NEW_TOKENS=16384
+MAX_NEW_TOKENS=2048
 
 # Paths
 SCRIPT_PATH="reason/evaluate.py"
