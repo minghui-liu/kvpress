@@ -70,7 +70,8 @@ for budget in "${CACHE_BUDGETS[@]}"; do
         --random_seed="$RANDOM_SEED" \
         --max_new_tokens="$MAX_NEW_TOKENS" \
         --n_hash_buckets=8 \
-        --lam="$lambda"
+        --lam="$lambda" \
+        --track_tokens=False
     done
   done
 done
