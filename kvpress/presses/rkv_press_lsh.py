@@ -307,7 +307,8 @@ class RKVLSHPress(ScorerPress):
         layer_idx = getattr(module, "layer_idx", 0)
         if self.cache_budget >= kv_len:
             # All tokens retained, track if needed
-            if layer_idx == 0:
+            # Only do CPU transfer if tokenizer is set (tracking enabled)
+            if layer_idx == 0 and self.tokenizer is not None:
                 if kv_len <= len(self.input_tokens):
                     all_token_ids = self.input_tokens[:kv_len].cpu().tolist()
                     retained_token_ids = all_token_ids.copy()
@@ -336,8 +337,10 @@ class RKVLSHPress(ScorerPress):
         indices = indices.unsqueeze(-1).expand(-1, -1, -1, module.head_dim)
 
         # Track token retention/eviction at first layer only
-        if layer_idx == 0:
+        # Only do CPU transfer if tokenizer is set (tracking enabled)
+        if layer_idx == 0 and self.tokenizer is not None:
             # Map position indices to actual token IDs
+            # CPU transfer only happens here for token tracking - computation stays on GPU
             if kv_len <= len(self.input_tokens):
                 all_token_ids = self.input_tokens[:kv_len].cpu().tolist()
                 retained_positions = indices[0, 0, :, 0].cpu().tolist()  # Get retained position indices
@@ -375,9 +378,14 @@ class RKVLSHPress(ScorerPress):
     def save_ranking_data(self, scores, indices, kv_len, is_prefill):
         """Save ranking data for analysis."""
         try:
-            # Convert tensors to numpy (convert BFloat16 to float32 first)
-            scores_np = scores.cpu().float().numpy().flatten()
-            indices_np = indices.cpu().float().numpy().flatten()
+            # Only move to CPU if we're actually saving ranking data
+            # Keep operations on GPU as much as possible - only convert when needed for numpy
+            # Use detach() to avoid gradient tracking, but keep on GPU until final conversion
+            scores_detached = scores.detach()
+            indices_detached = indices.detach()
+            # Convert to numpy only at the last moment (CPU transfer happens here)
+            scores_np = scores_detached.cpu().float().numpy().flatten()
+            indices_np = indices_detached.cpu().float().numpy().flatten()
             
             # Get rankings (higher score = higher rank)
             rankings = np.argsort(scores_np)[::-1]  # Sort in descending order
