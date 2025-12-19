@@ -203,8 +203,22 @@ def evaluate(
     save_dir = Path(__file__).parent / "results"
     save_dir.mkdir(exist_ok=True)
     if "rkv" in press_name:
+        # Format lambda with 3 decimal places, then format for filename
+        # e.g., 0.01 -> "001", 0.05 -> "005", 0.1 -> "01", 1.0 -> "1"
+        # Multiply by 100 to get integer representation, then format with leading zeros if needed
+        lam_int = int(round(lam * 100))
+        if lam_int == 0:
+            lam_sanitized = "0"
+        elif lam_int < 10:
+            lam_sanitized = f"00{lam_int}"  # 0.01 -> 001, 0.05 -> 005
+        elif lam_int < 100:
+            lam_sanitized = f"0{lam_int}"    # 0.1 -> 01, 0.2 -> 02
+        else:
+            lam_sanitized = str(lam_int)     # 1.0 -> 100, but we want "1"
+            # Remove trailing zeros: 100 -> 1, 200 -> 2
+            lam_sanitized = str(int(lam_sanitized) // 100) if lam_int % 100 == 0 else lam_sanitized
         save_filename = save_dir / (
-            "__".join([dataset, data_dir if data_dir else "", model_name.replace("/", "--"), press_name, f"budget{cache_budget}",f"hash_bucket{n_hash_buckets}", f"max_new_tokens{max_new_tokens}",f"lam{int(lam*10)}"])
+            "__".join([dataset, data_dir if data_dir else "", model_name.replace("/", "--"), press_name, f"budget{cache_budget}",f"hash_bucket{n_hash_buckets}", f"max_new_tokens{max_new_tokens}",f"lam{lam_sanitized}"])
             + ".jsonl"
         )
     else:
