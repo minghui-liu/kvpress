@@ -365,8 +365,9 @@ class RKVLSHPress(ScorerPress):
             (1, self.compress_interval, self.hidden_size), dtype=torch.bfloat16, device=device
         ) # Reset accumulated hidden states
 
-        # Save ranking data
-        self.save_ranking_data(scores, indices, kv_len, False)
+        # Save ranking data only if tokenizer is set (tracking enabled)
+        if self.tokenizer is not None:
+            self.save_ranking_data(scores, indices, kv_len, False)
 
         return keys, values
 

@@ -228,8 +228,9 @@ class ScorerPress(BasePress):
                 retained_token_ids = [all_token_ids[pos] if pos < len(self.input_tokens) else pos for pos in retained_positions]
             self.track_generation_step(all_token_ids, retained_token_ids, self.tokenizer)
 
-        # Save ranking data
-        self.save_ranking_data(scores, indices, kv_len, False)
+        # Save ranking data only if tokenizer is set (tracking enabled)
+        if self.tokenizer is not None:
+            self.save_ranking_data(scores, indices, kv_len, False)
 
         # Prune keys and values
         keys = keys.gather(2, indices).contiguous()

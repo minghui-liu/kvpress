@@ -502,8 +502,8 @@ def evaluate(
             # Add timing metrics to save_obj
             save_obj.update(timing_metrics)
             
-            # Save ranking data if press has ranking collection
-            if press is not None and hasattr(press, 'save_all_ranking_data'):
+            # Save ranking data only if track_tokens is enabled
+            if track_tokens and press is not None and hasattr(press, 'save_all_ranking_data'):
                 press.save_all_ranking_data()
             
             # Track keyword retention and token tracking only if enabled
