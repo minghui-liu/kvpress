@@ -47,9 +47,10 @@ class RKVLSHPress(ScorerPress):
         self.acc_hidden_states = None  # Will be initialized when hidden_size is known
         
         # Initialize ranking data collection
+        # Only create directory if tracking is enabled (will be set later via set_tokenizer_and_tokens)
         self.ranking_data = []
         self.save_dir = "ranking_analysis"
-        os.makedirs(self.save_dir, exist_ok=True)
+        # Don't create directory here - only create when actually needed (when tokenizer is set)
         
         # Tokenizer for decoding tokens (will be set during inference)
         self.tokenizer = None
@@ -456,6 +457,12 @@ class RKVLSHPress(ScorerPress):
     
     def save_all_ranking_data(self, filename=None):
         """Save all collected ranking data to a single file."""
+        # Only save if tokenizer is set (tracking enabled)
+        if self.tokenizer is None:
+            return
+        # Create directory only when needed
+        if not os.path.exists(self.save_dir):
+            os.makedirs(self.save_dir, exist_ok=True)
         try:
             if filename is None:
                 class_name = self.__class__.__name__.lower()

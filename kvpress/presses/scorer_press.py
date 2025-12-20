@@ -32,9 +32,10 @@ class ScorerPress(BasePress):
         assert 0 <= self.compression_ratio < 1, "Compression ratio must be between 0 and 1"
         
         # Initialize ranking data collection
+        # Only create directory if tracking is enabled (will be set later via set_tokenizer_and_tokens)
         self.ranking_data = []
         self.save_dir = "ranking_analysis"
-        os.makedirs(self.save_dir, exist_ok=True)
+        # Don't create directory here - only create when actually needed (when tokenizer is set)
         
         # Tokenizer for decoding tokens (will be set during inference)
         self.tokenizer = None
@@ -63,6 +64,12 @@ class ScorerPress(BasePress):
 
     def save_ranking_data(self, scores, indices, kv_len, is_prefill):
         """Save ranking data for analysis."""
+        # Only save if tokenizer is set (tracking enabled)
+        if self.tokenizer is None:
+            return
+        # Create directory only when needed (first time saving)
+        if not os.path.exists(self.save_dir):
+            os.makedirs(self.save_dir, exist_ok=True)
         try:
             # Convert tensors to numpy
             scores_np = scores.cpu().numpy().flatten()
@@ -135,6 +142,12 @@ class ScorerPress(BasePress):
     
     def save_all_ranking_data(self, filename="all_ranking_data.json"):
         """Save all collected ranking data to a single file."""
+        # Only save if tokenizer is set (tracking enabled)
+        if self.tokenizer is None:
+            return
+        # Create directory only when needed
+        if not os.path.exists(self.save_dir):
+            os.makedirs(self.save_dir, exist_ok=True)
         try:
             output_file = os.path.join(self.save_dir, filename)
             with open(output_file, 'w') as f:
