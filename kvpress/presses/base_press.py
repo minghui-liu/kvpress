@@ -143,6 +143,10 @@ class BasePress:
     def track_generation_step(self, all_token_ids: list, retained_token_ids: list, tokenizer=None):
         """
         Track token retention/eviction at each generation step during decoding.
+        Early return if tokenizer is None (tracking disabled).
+        """
+        if tokenizer is None:
+            return
         This updates the last entry created by _track_decoding_step with compression results.
         
         During decoding:
@@ -295,6 +299,9 @@ class BasePress:
     
     def get_generation_steps(self) -> list:
         """Get all tracked generation steps"""
+        # If tokenizer is not set, return empty list (tracking disabled)
+        if self.tokenizer is None:
+            return []
         return self.generation_steps.copy()
 
     def get_timing_metrics(self):

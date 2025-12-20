@@ -195,8 +195,8 @@ class ScorerPress(BasePress):
 
         kv_len = keys.shape[2]
         if self.cache_budget >= kv_len:
-            # All tokens retained, track if needed
-            if getattr(module, "layer_idx", 0) == 0:  # Only track at first layer to avoid duplicates
+            # All tokens retained, track if needed (only if tokenizer is set)
+            if getattr(module, "layer_idx", 0) == 0 and self.tokenizer is not None:  # Only track at first layer to avoid duplicates
                 # Map position indices to actual token IDs
                 if kv_len <= len(self.input_tokens):
                     all_token_ids = self.input_tokens[:kv_len].cpu().tolist()
@@ -214,8 +214,8 @@ class ScorerPress(BasePress):
         indices = scores.topk(self.cache_budget, dim=-1).indices
         indices = indices.unsqueeze(-1).expand(-1, -1, -1, module.head_dim)
         
-        # Track token retention/eviction at first layer only
-        if getattr(module, "layer_idx", 0) == 0:  # Only track at first layer to avoid duplicates
+        # Track token retention/eviction at first layer only (only if tokenizer is set)
+        if getattr(module, "layer_idx", 0) == 0 and self.tokenizer is not None:  # Only track at first layer to avoid duplicates
             # Map position indices to actual token IDs
             if kv_len <= len(self.input_tokens):
                 all_token_ids = self.input_tokens[:kv_len].cpu().tolist()
