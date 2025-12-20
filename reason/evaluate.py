@@ -149,7 +149,7 @@ def evaluate(
     key_channel_compression_ratio: float = 0.5,
     n_hash_buckets: int = 6,
     lam:float=0.1,
-    track_tokens: bool = True
+    track_tokens: bool = False
 ):
     """
     Evaluate a model on a dataset using a press and save the results

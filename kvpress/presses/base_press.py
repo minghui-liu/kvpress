@@ -144,9 +144,7 @@ class BasePress:
         """
         Track token retention/eviction at each generation step during decoding.
         Early return if tokenizer is None (tracking disabled).
-        """
-        if tokenizer is None:
-            return
+        
         This updates the last entry created by _track_decoding_step with compression results.
         
         During decoding:
@@ -163,6 +161,10 @@ class BasePress:
         tokenizer : optional
             Tokenizer to decode tokens to text
         """
+        # Early return if tokenizer is None (tracking disabled)
+        if tokenizer is None:
+            return
+            
         all_token_set = set(all_token_ids)
         current_retained_set = set(retained_token_ids)
         
