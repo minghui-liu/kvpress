@@ -446,12 +446,22 @@ def evaluate(
             response = tokenizer.decode(outputs[0][pred_start:], skip_special_tokens=True)
             model_answer = extractor(response)
 
+            # Get timing metrics from press if available (before deleting tensors)
+            timing_metrics = {}
+            if press is not None and hasattr(press, 'get_timing_metrics'):
+                timing_metrics = press.get_timing_metrics()
+
+            # Calculate metrics before deleting tensors
+            input_token_count = inputs["input_ids"].shape[1]
+            output_token_count = outputs[0].shape[0] - input_token_count
+            total_token_count = outputs[0].shape[0]
+            
             peak_memory = torch.cuda.max_memory_allocated()
             memory_usage=peak_memory / 1024**3
             execution_time=time()-start
             
             # Aggressive memory cleanup after each sample
-            # Delete large tensors explicitly
+            # Delete large tensors explicitly (after all metrics are calculated)
             del outputs
             del inputs
             
@@ -463,16 +473,6 @@ def evaluate(
             # Force Python garbage collection
             import gc
             gc.collect()
-
-            # Get timing metrics from press if available
-            timing_metrics = {}
-            if press is not None and hasattr(press, 'get_timing_metrics'):
-                timing_metrics = press.get_timing_metrics()
-
-            # calculate the compression ratio
-            input_token_count = inputs["input_ids"].shape[1]
-            output_token_count = outputs[0].shape[0] - input_token_count
-            total_token_count = outputs[0].shape[0]
             
             # For NonePress, no compression is applied
             if press is None or isinstance(press, NonePress):
