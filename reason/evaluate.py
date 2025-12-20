@@ -388,11 +388,32 @@ def evaluate(
                 # Initialize input_token_ids for potential use in tracking (though tracking is skipped)
                 input_token_ids = inputs["input_ids"][0].tolist()
                 
-                outputs = model.generate(
+                if do_sampling:
+                    outputs = model.generate(
                         inputs["input_ids"],
                         attention_mask=inputs["attention_mask"],
                         max_new_tokens=max_new_tokens,
+                        do_sample=True,
+                        top_p=0.9,
+                        temperature=0.7,
+                        repetition_penalty=1.2,
+                        use_cache=True,
+                        output_attentions=False,
                     )
+                else:
+                    outputs = model.generate(
+                        inputs["input_ids"],
+                        attention_mask=inputs["attention_mask"],
+                        max_new_tokens=max_new_tokens,
+                        do_sample=False,
+                        use_cache=True,
+                        output_attentions=False,
+                    )
+                
+                # Decode response for SeerAttention path
+                pred_start = inputs["input_ids"].shape[1]
+                response = tokenizer.decode(outputs[0][pred_start:], skip_special_tokens=True)
+                model_answer = extractor(response)
             else:
                 # Standard path with press infrastructure
                 # Reset timing and clear any accumulated state before generation
@@ -443,36 +464,39 @@ def evaluate(
                 keyword_token_ids = {}
             input_token_ids = inputs["input_ids"][0].tolist()
 
-            # Use press context manager
-            press_context = press(model) if press is not None and not isinstance(press, NonePress) else contextlib.nullcontext()
-            
-            if do_sampling:
-                with press_context:
-                    outputs = model.generate(
-                        inputs["input_ids"],
-                        attention_mask=inputs["attention_mask"],
-                        max_new_tokens=max_new_tokens,
-                        do_sample=True,
-                        top_p=0.9,
-                        temperature=0.7,
-                        repetition_penalty=1.2,
-                        use_cache=True,
-                        output_attentions=output_attentions(press) if press is not None and not isinstance(press, NonePress) else False,
-                    )
-            else:
-                with press_context:
-                    outputs = model.generate(
-                        inputs["input_ids"],
-                        attention_mask=inputs["attention_mask"],
-                        max_new_tokens=max_new_tokens,
-                        do_sample=False,
-                        use_cache=True,
+            # Only run standard path generation if not using SeerAttention simplified path
+            if not is_seer_attention_none:
+                # Use press context manager
+                press_context = press(model) if press is not None and not isinstance(press, NonePress) else contextlib.nullcontext()
+                
+                if do_sampling:
+                    with press_context:
+                        outputs = model.generate(
+                            inputs["input_ids"],
+                            attention_mask=inputs["attention_mask"],
+                            max_new_tokens=max_new_tokens,
+                            do_sample=True,
+                            top_p=0.9,
+                            temperature=0.7,
+                            repetition_penalty=1.2,
+                            use_cache=True,
                             output_attentions=output_attentions(press) if press is not None and not isinstance(press, NonePress) else False,
-                    )
-
-            pred_start = inputs["input_ids"].shape[1]
-            response = tokenizer.decode(outputs[0][pred_start:], skip_special_tokens=True)
-            model_answer = extractor(response)
+                        )
+                else:
+                    with press_context:
+                        outputs = model.generate(
+                            inputs["input_ids"],
+                            attention_mask=inputs["attention_mask"],
+                            max_new_tokens=max_new_tokens,
+                            do_sample=False,
+                            use_cache=True,
+                            output_attentions=output_attentions(press) if press is not None and not isinstance(press, NonePress) else False,
+                        )
+                
+                # Decode response for standard path
+                pred_start = inputs["input_ids"].shape[1]
+                response = tokenizer.decode(outputs[0][pred_start:], skip_special_tokens=True)
+                model_answer = extractor(response)
 
             # Get timing metrics from press if available (before deleting tensors)
             timing_metrics = {}
@@ -604,7 +628,7 @@ def evaluate(
                 # Collect per-step token tracking ONLY if track_tokens is explicitly True
                 # Explicitly check track_tokens == True to prevent any tracking when False
                 generation_steps = []
-                if track_tokens == True and not is_seer_attention_none and press is not None and not isinstance(press, NonePress) and hasattr(press, 'get_generation_steps'):
+                if not is_seer_attention_none and press is not None and not isinstance(press, NonePress) and hasattr(press, 'get_generation_steps'):
                     generation_steps = press.get_generation_steps()
                 
                 # Save generation_steps to save_obj
@@ -612,7 +636,7 @@ def evaluate(
                 
                 # Save to a separate detailed JSON file ONLY if track_tokens is explicitly True
                 # Explicitly check track_tokens == True to prevent file creation when False
-                if track_tokens == True and not is_seer_attention_none and generation_steps:
+                if not is_seer_attention_none and generation_steps:
                     step_tracking_file = save_filename.with_suffix('.step_tracking.json')
                     step_data = {
                         'question_index': i,
@@ -626,7 +650,7 @@ def evaluate(
                     # Append to file incrementally (one JSON object per line)
                     with open(str(step_tracking_file), "a", encoding='utf-8') as step_f:
                         step_f.write(json.dumps(step_data, indent=2) + "\n")
-            elif track_tokens == False:
+            else:
                 # track_tokens is explicitly False - set empty tracking data
                 # Ensure no tracking data is saved when track_tokens is False
                 save_obj['keywords'] = {}
