@@ -230,6 +230,9 @@ class BasePress:
     
     def _track_prefilling_step(self, module: nn.Module, keys: torch.Tensor):
         """Track a prefilling step."""
+        # Early return if tokenizer or input_tokens is None (tracking disabled)
+        if self.tokenizer is None or self.input_tokens is None:
+            return
         kv_len = keys.shape[2]
         
         # For prefilling, track that we're in prefilling phase
@@ -265,6 +268,9 @@ class BasePress:
     
     def _track_decoding_step(self, module: nn.Module, keys: torch.Tensor):
         """Track a decoding step - called once per token generation at layer 0."""
+        # Early return if tokenizer or input_tokens is None (tracking disabled)
+        if self.tokenizer is None or self.input_tokens is None:
+            return
         kv_len = keys.shape[2]
         
         # Get all tokens in cache before compression

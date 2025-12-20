@@ -198,9 +198,6 @@ class RKVLSHPress(ScorerPress):
             )
             self.proj_matrix_head_dim = head_dim
         
-        # Optimized hashing projection: use matmul which is faster than einsum for this pattern
-        # einsum("bhqd,dk->bhqk") is equivalent to matmul after reshaping
-        # For small sequences, matmul is often faster than einsum
         q_len_flat, head_dim = keys_flat.shape[2], keys_flat.shape[3]
         keys_reshaped = keys_flat.reshape(-1, head_dim)  # [B*H*Q, D]
         hash_bits_flat = torch.matmul(keys_reshaped, self.proj_matrix)  # [B*H*Q, K] - faster than einsum
@@ -308,15 +305,16 @@ class RKVLSHPress(ScorerPress):
         layer_idx = getattr(module, "layer_idx", 0)
         if self.cache_budget >= kv_len:
             # All tokens retained, track if needed
-            # Only do CPU transfer if tokenizer is set (tracking enabled)
-            if layer_idx == 0 and self.tokenizer is not None:
-                if kv_len <= len(self.input_tokens):
-                    all_token_ids = self.input_tokens[:kv_len].cpu().tolist()
-                    retained_token_ids = all_token_ids.copy()
-                else:
-                    all_token_ids = self.input_tokens.cpu().tolist() + list(range(len(self.input_tokens), kv_len))
-                    retained_token_ids = all_token_ids.copy()
-                self.track_generation_step(all_token_ids, retained_token_ids, self.tokenizer)
+            # Only track if tokenizer is set (track_tokens == True)
+            if layer_idx == 0:
+                if self.tokenizer is not None and self.input_tokens is not None:
+                    if kv_len <= len(self.input_tokens):
+                        all_token_ids = self.input_tokens[:kv_len].cpu().tolist()
+                        retained_token_ids = all_token_ids.copy()
+                    else:
+                        all_token_ids = self.input_tokens.cpu().tolist() + list(range(len(self.input_tokens), kv_len))
+                        retained_token_ids = all_token_ids.copy()
+                    self.track_generation_step(all_token_ids, retained_token_ids, self.tokenizer)
             return keys, values
         
         # Initialize hidden size if not set
@@ -330,28 +328,28 @@ class RKVLSHPress(ScorerPress):
             self.acc_hidden_states[:, self.accumulated_tokens - 1, :] = hidden_states
             return keys, values
 
-        # Compute scores
-        # scores = self.score(module, hidden_states, keys, values, attentions, False, kwargs)
+        # Compute scores using LSH algorithm
         scores = self.score(module, self.acc_hidden_states[:, -self.window_size:, :], keys, values, attentions, False, kwargs)
         # Get indices of KV pairs with the lowest scores
         indices = scores.topk(self.cache_budget, dim=-1).indices
         indices = indices.unsqueeze(-1).expand(-1, -1, -1, module.head_dim)
 
         # Track token retention/eviction at first layer only
-        # Only do CPU transfer if tokenizer is set (tracking enabled)
-        if layer_idx == 0 and self.tokenizer is not None:
-            # Map position indices to actual token IDs
-            # CPU transfer only happens here for token tracking - computation stays on GPU
-            if kv_len <= len(self.input_tokens):
-                all_token_ids = self.input_tokens[:kv_len].cpu().tolist()
-                retained_positions = indices[0, 0, :, 0].cpu().tolist()  # Get retained position indices
-                retained_token_ids = [all_token_ids[pos] for pos in retained_positions]
-            else:
-                # If kv_len > input_tokens, we have generated tokens
-                all_token_ids = self.input_tokens.cpu().tolist() + list(range(len(self.input_tokens), kv_len))
-                retained_positions = indices[0, 0, :, 0].cpu().tolist()
-                retained_token_ids = [all_token_ids[pos] if pos < len(self.input_tokens) else pos for pos in retained_positions]
-            self.track_generation_step(all_token_ids, retained_token_ids, self.tokenizer)
+        # Only track if tokenizer is set (track_tokens == True)
+        if layer_idx == 0:
+            if self.tokenizer is not None and self.input_tokens is not None:
+                # Map position indices to actual token IDs
+                # CPU transfer only happens here for token tracking - computation stays on GPU
+                if kv_len <= len(self.input_tokens):
+                    all_token_ids = self.input_tokens[:kv_len].cpu().tolist()
+                    retained_positions = indices[0, 0, :, 0].cpu().tolist()  # Get retained position indices
+                    retained_token_ids = [all_token_ids[pos] for pos in retained_positions]
+                else:
+                    # If kv_len > input_tokens, we have generated tokens
+                    all_token_ids = self.input_tokens.cpu().tolist() + list(range(len(self.input_tokens), kv_len))
+                    retained_positions = indices[0, 0, :, 0].cpu().tolist()
+                    retained_token_ids = [all_token_ids[pos] if pos < len(self.input_tokens) else pos for pos in retained_positions]
+                self.track_generation_step(all_token_ids, retained_token_ids, self.tokenizer)
 
         # Prune keys and values
         keys = keys.gather(2, indices).contiguous()
@@ -362,12 +360,13 @@ class RKVLSHPress(ScorerPress):
         
         if layer_idx == 0:
             self.accumulated_tokens = 0  # Reset after compression
-        self.acc_hidden_states = torch.zeros(
-            (1, self.compress_interval, self.hidden_size), dtype=torch.bfloat16, device=device
-        ) # Reset accumulated hidden states
+            device = hidden_states.device
+            self.acc_hidden_states = torch.zeros(
+                (1, self.compress_interval, self.hidden_size), dtype=torch.bfloat16, device=device
+            ) # Reset accumulated hidden states
 
-        # Save ranking data ONLY if tokenizer is set (track_tokens=True)
-        # When track_tokens=False, tokenizer is None, so no ranking data is saved
+        # Save ranking data ONLY if tokenizer is set (track_tokens == True)
+        # When track_tokens == False, tokenizer is None, so no ranking data is saved
         if self.tokenizer is not None:
             self.save_ranking_data(scores, indices, kv_len, False)
 
