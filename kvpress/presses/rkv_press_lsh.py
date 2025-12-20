@@ -366,7 +366,8 @@ class RKVLSHPress(ScorerPress):
             (1, self.compress_interval, self.hidden_size), dtype=torch.bfloat16, device=device
         ) # Reset accumulated hidden states
 
-        # Save ranking data only if tokenizer is set (tracking enabled)
+        # Save ranking data ONLY if tokenizer is set (track_tokens=True)
+        # When track_tokens=False, tokenizer is None, so no ranking data is saved
         if self.tokenizer is not None:
             self.save_ranking_data(scores, indices, kv_len, False)
 
@@ -378,7 +379,13 @@ class RKVLSHPress(ScorerPress):
         self.input_tokens = input_tokens
 
     def save_ranking_data(self, scores, indices, kv_len, is_prefill):
-        """Save ranking data for analysis."""
+        """Save ranking data for analysis. Only called when track_tokens=True (tokenizer is set)."""
+        # Double-check: only save if tokenizer is set (tracking enabled)
+        if self.tokenizer is None:
+            return
+        # Create directory only when needed (first time saving)
+        if not os.path.exists(self.save_dir):
+            os.makedirs(self.save_dir, exist_ok=True)
         try:
             # Only move to CPU if we're actually saving ranking data
             # Keep operations on GPU as much as possible - only convert when needed for numpy
@@ -456,8 +463,8 @@ class RKVLSHPress(ScorerPress):
             print(f"Error saving ranking data: {e}")
     
     def save_all_ranking_data(self, filename=None):
-        """Save all collected ranking data to a single file."""
-        # Only save if tokenizer is set (tracking enabled)
+        """Save all collected ranking data to a single file. Only called when track_tokens=True."""
+        # Double-check: only save if tokenizer is set (tracking enabled)
         if self.tokenizer is None:
             return
         # Create directory only when needed
@@ -477,4 +484,3 @@ class RKVLSHPress(ScorerPress):
     def reset_ranking_data(self):
         """Reset collected ranking data."""
         self.ranking_data = []
-

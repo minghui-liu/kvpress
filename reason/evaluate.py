@@ -347,6 +347,12 @@ def evaluate(
         # Run generation on each context of the dataset
         # Results are written incrementally, so we don't need to store them in memory
         for i, example in tqdm(enumerate(ds), total=len(ds)):
+            # Aggressive memory cleanup at the START of each sample to prevent accumulation
+            import gc
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+            gc.collect()
+            
             input_text, gt_answer_text = formatter(example)
             inputs = tokenizer(input_text, return_tensors="pt", truncation=True).to(device)
             if max_context_length is not None:
@@ -354,7 +360,7 @@ def evaluate(
             if max_new_tokens is None:
                 max_new_tokens = 16 * 1024 - inputs["input_ids"].shape[1] # use 16k for max length for now
 
-            # Memory
+            # Reset memory stats and clear cache before generation
             torch.cuda.reset_peak_memory_stats()
             torch.cuda.empty_cache()
 
@@ -386,11 +392,22 @@ def evaluate(
                     )
             else:
                 # Standard path with press infrastructure
-                # Reset timing before generation
+                # Reset timing and clear any accumulated state before generation
                 if press is not None and not isinstance(press, NonePress):
                     press.reset_timing()
-                # Set tokenizer and input tokens only if token tracking is enabled
-                # This is needed for ranking data collection and per-step tracking
+                    # Clear any accumulated hidden states or cached tensors
+                    if hasattr(press, 'acc_hidden_states') and press.acc_hidden_states is not None:
+                        del press.acc_hidden_states
+                        press.acc_hidden_states = None
+                    if hasattr(press, 'accumulated_tokens'):
+                        press.accumulated_tokens = 0
+                    # Clear cached tensors in press if they exist
+                    if hasattr(press, 'cos_bucket_cached'):
+                        press.cos_bucket_cached = None
+                    if hasattr(press, 'powers_of_two_cached'):
+                        press.powers_of_two_cached = None
+                # Set tokenizer and input tokens ONLY if token tracking is enabled
+                # When track_tokens=False, explicitly set tokenizer to None to prevent ALL tracking
                 if track_tokens:
                     if hasattr(press, 'set_tokenizer_and_tokens'):
                         press.set_tokenizer_and_tokens(tokenizer, inputs["input_ids"][0])
@@ -404,6 +421,13 @@ def evaluate(
                         press.tokenizer = tokenizer
                     if not hasattr(press, 'input_tokens') or press.input_tokens is None:
                         press.input_tokens = inputs["input_ids"][0]
+                else:
+                    # When track_tokens=False, explicitly set tokenizer to None to prevent ALL tracking
+                    # This ensures no ranking data, no step tracking, no token tracking
+                    if hasattr(press, 'tokenizer'):
+                        press.tokenizer = None
+                    if hasattr(press, 'input_tokens'):
+                        press.input_tokens = None
                 
                 # Extract keywords from input text for tracking
                 # Extract keywords only if token tracking is enabled
@@ -464,15 +488,30 @@ def evaluate(
             # Delete large tensors explicitly (after all metrics are calculated)
             del outputs
             del inputs
+            del response
+            if 'model_answer' in locals():
+                del model_answer
+            
+            # Clear press accumulated state after each sample
+            if press is not None and not isinstance(press, NonePress):
+                if hasattr(press, 'acc_hidden_states') and press.acc_hidden_states is not None:
+                    del press.acc_hidden_states
+                    press.acc_hidden_states = None
+                if hasattr(press, 'accumulated_tokens'):
+                    press.accumulated_tokens = 0
+                # Clear any cached ranking data to prevent accumulation
+                if hasattr(press, 'ranking_data'):
+                    press.ranking_data = []
             
             # Clear CUDA cache and reset stats
             torch.cuda.empty_cache()
             torch.cuda.synchronize()
             torch.cuda.reset_peak_memory_stats()
             
-            # Force Python garbage collection
+            # Force Python garbage collection (multiple passes for thorough cleanup)
             import gc
             gc.collect()
+            gc.collect()  # Second pass to catch circular references
             
             # For NonePress, no compression is applied
             if press is None or isinstance(press, NonePress):
@@ -595,13 +634,32 @@ def evaluate(
             
             print(f"✅ [{i+1}/{len(ds)}] Saved result for question {i+1} to {save_filename.name} (Memory: {memory_usage:.2f} GB)")
             
-            # Additional memory cleanup every 5 samples
-            if (i + 1) % 5 == 0:
+            # Additional aggressive memory cleanup every 3 samples to prevent accumulation
+            if (i + 1) % 3 == 0:
+                # Clear all press state
+                if press is not None and not isinstance(press, NonePress):
+                    if hasattr(press, 'acc_hidden_states') and press.acc_hidden_states is not None:
+                        del press.acc_hidden_states
+                        press.acc_hidden_states = None
+                    if hasattr(press, 'ranking_data'):
+                        press.ranking_data = []
+                    # Clear cached tensors
+                    if hasattr(press, 'cos_bucket_cached'):
+                        press.cos_bucket_cached = None
+                    if hasattr(press, 'powers_of_two_cached'):
+                        press.powers_of_two_cached = None
+                    if hasattr(press, 'proj_matrix'):
+                        # Keep proj_matrix but clear device-specific caches
+                        pass
+                
+                # Aggressive CUDA cleanup
                 torch.cuda.empty_cache()
                 torch.cuda.synchronize()
+                torch.cuda.reset_peak_memory_stats()
                 import gc
                 gc.collect()
-                print(f"   🧹 Memory cleanup after {i+1} samples")
+                gc.collect()  # Second pass
+                print(f"   🧹 Aggressive memory cleanup after {i+1} samples")
         
         print(f"\n✅ All results saved to {save_filename}")
     # end of the if save_filename.exists()
