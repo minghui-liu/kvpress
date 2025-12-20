@@ -512,8 +512,33 @@ def evaluate(
             memory_usage=peak_memory / 1024**3
             execution_time=time()-start
             
+            # For NonePress, no compression is applied
+            if press is None or isinstance(press, NonePress):
+                actual_compression = 1.0
+            elif total_token_count <= cache_budget:
+                actual_compression = 1.0
+            else:
+                actual_compression = cache_budget / total_token_count
+            
+            save_obj = example.copy()
+            save_obj.update(
+                {
+                    "input_text": input_text,
+                    "response": response,
+                    "extracted_answer": model_answer,
+                    "gt_answer": gt_answer_text,
+                    "input_token_count": input_token_count,
+                    "output_token_count": output_token_count,
+                    "total_token_count": total_token_count,
+                    "cache_budget": cache_budget,
+                    "compression_ratio": actual_compression,
+                    "memory_usage": memory_usage,
+                    "execution_time": execution_time,
+                }
+            )
+            
             # Aggressive memory cleanup after each sample
-            # Delete large tensors explicitly (after all metrics are calculated)
+            # Delete large tensors explicitly (after all metrics and save_obj are calculated)
             del outputs
             del inputs
             del response
@@ -540,31 +565,6 @@ def evaluate(
             import gc
             gc.collect()
             gc.collect()  # Second pass to catch circular references
-            
-            # For NonePress, no compression is applied
-            if press is None or isinstance(press, NonePress):
-                actual_compression = 1.0
-            elif total_token_count <= cache_budget:
-                actual_compression = 1.0
-            else:
-                actual_compression = cache_budget / total_token_count
-            
-            save_obj = example.copy()
-            save_obj.update(
-                {
-                    "input_text": input_text,
-                    "response": response,
-                    "extracted_answer": model_answer,
-                    "gt_answer": gt_answer_text,
-                    "input_token_count": input_token_count,
-                    "output_token_count": output_token_count,
-                    "total_token_count": total_token_count,
-                    "cache_budget": cache_budget,
-                    "compression_ratio": actual_compression,
-                    "memory_usage": memory_usage,
-                    "execution_time": execution_time,
-                }
-            )
             
             # Add timing metrics to save_obj
             save_obj.update(timing_metrics)
