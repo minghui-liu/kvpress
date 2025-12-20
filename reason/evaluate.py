@@ -249,9 +249,12 @@ def evaluate(
         # Clear the file first if it exists
         if save_filename.exists():
             save_filename.unlink()
-        # Delete step tracking file if it exists (will be recreated if track_tokens is True)
-        # Only delete if we're about to create a new one (track_tokens is True)
-        if track_tokens and save_filename.with_suffix('.step_tracking.json').exists():
+        # Delete step tracking file ONLY if track_tokens is True (will be recreated)
+        # Explicitly check track_tokens == True - do NOT delete if track_tokens is False
+        if track_tokens == True and save_filename.with_suffix('.step_tracking.json').exists():
+            save_filename.with_suffix('.step_tracking.json').unlink()
+        # If track_tokens is explicitly False, ensure any existing step tracking file is deleted
+        elif track_tokens == False and save_filename.with_suffix('.step_tracking.json').exists():
             save_filename.with_suffix('.step_tracking.json').unlink()
         # Load datasetf
         ds = load_dataset(hf_name, data_dir=data_dir, split=data_split)
@@ -301,12 +304,12 @@ def evaluate(
             )
             # Load model after tokenizer
             model = SeerDecodingQwen2ForCausalLM.from_pretrained(
-                        model_name,
-                        torch_dtype=torch.bfloat16,
+                    model_name,
+                    torch_dtype=torch.bfloat16,
                         trust_remote_code=True,
-                        seerattn_sparsity_method='token_budget', 
-                        seerattn_token_budget = cache_budget 
-                    )
+                    seerattn_sparsity_method='token_budget', 
+                    seerattn_token_budget = cache_budget 
+                )
             model.to(device)
         elif "DeepSeek" in model_name or "Llama-3.1" in model_name or "Meta-Llama-3.1" in model_name:
             # DeepSeek and Llama 3.1 models: Load tokenizer with trust_remote_code
@@ -406,65 +409,66 @@ def evaluate(
                         press.cos_bucket_cached = None
                     if hasattr(press, 'powers_of_two_cached'):
                         press.powers_of_two_cached = None
-                # Set tokenizer and input tokens ONLY if token tracking is enabled
-                # When track_tokens=False, explicitly set tokenizer to None to prevent ALL tracking
-                if track_tokens:
-                    if hasattr(press, 'set_tokenizer_and_tokens'):
-                        press.set_tokenizer_and_tokens(tokenizer, inputs["input_ids"][0])
-                    # Also set tokenizer directly for per-step tracking (for all presses including FullPress)
-                    if hasattr(press, 'tokenizer'):
-                        press.tokenizer = tokenizer
-                    if hasattr(press, 'input_tokens'):
-                        press.input_tokens = inputs["input_ids"][0]
-                    # For FullPress, ensure tokenizer is set (it doesn't have set_tokenizer_and_tokens)
-                    if not hasattr(press, 'tokenizer') or press.tokenizer is None:
-                        press.tokenizer = tokenizer
-                    if not hasattr(press, 'input_tokens') or press.input_tokens is None:
-                        press.input_tokens = inputs["input_ids"][0]
-                else:
-                    # When track_tokens=False, explicitly set tokenizer to None to prevent ALL tracking
-                    # This ensures no ranking data, no step tracking, no token tracking
-                    if hasattr(press, 'tokenizer'):
-                        press.tokenizer = None
-                    if hasattr(press, 'input_tokens'):
-                        press.input_tokens = None
-                
-                # Extract keywords from input text for tracking
-                # Extract keywords only if token tracking is enabled
-                if track_tokens:
-                    keywords = extract_keywords(input_text)
-                    keyword_token_ids = tokenize_keywords(keywords, tokenizer)
-                else:
-                    keywords = {}
-                    keyword_token_ids = {}
-                input_token_ids = inputs["input_ids"][0].tolist()
+                    
+                    # Set tokenizer and input tokens ONLY if track_tokens is explicitly True
+                    # Explicitly check track_tokens == True to prevent setting when False
+                    if track_tokens == True:
+                        if hasattr(press, 'set_tokenizer_and_tokens'):
+                            press.set_tokenizer_and_tokens(tokenizer, inputs["input_ids"][0])
+                        # Also set tokenizer directly for per-step tracking (for all presses including FullPress)
+                        if hasattr(press, 'tokenizer'):
+                            press.tokenizer = tokenizer
+                        if hasattr(press, 'input_tokens'):
+                            press.input_tokens = inputs["input_ids"][0]
+                        # For FullPress, ensure tokenizer is set (it doesn't have set_tokenizer_and_tokens)
+                        if not hasattr(press, 'tokenizer') or press.tokenizer is None:
+                            press.tokenizer = tokenizer
+                        if not hasattr(press, 'input_tokens') or press.input_tokens is None:
+                            press.input_tokens = inputs["input_ids"][0]
+                    elif track_tokens == False:
+                        # When track_tokens is explicitly False, set tokenizer to None to prevent ALL tracking
+                        # This ensures no ranking data, no step tracking, no token tracking
+                        if hasattr(press, 'tokenizer'):
+                            press.tokenizer = None
+                        if hasattr(press, 'input_tokens'):
+                            press.input_tokens = None
+            
+            # Extract keywords from input text for tracking
+            # Extract keywords ONLY if track_tokens is explicitly True
+            if track_tokens == True:
+                keywords = extract_keywords(input_text)
+                keyword_token_ids = tokenize_keywords(keywords, tokenizer)
+            elif track_tokens == False:
+                keywords = {}
+                keyword_token_ids = {}
+            input_token_ids = inputs["input_ids"][0].tolist()
 
-                # Use press context manager
-                press_context = press(model) if press is not None and not isinstance(press, NonePress) else contextlib.nullcontext()
-                
-                if do_sampling:
-                    with press_context:
-                        outputs = model.generate(
-                            inputs["input_ids"],
-                            attention_mask=inputs["attention_mask"],
-                            max_new_tokens=max_new_tokens,
-                            do_sample=True,
-                            top_p=0.9,
-                            temperature=0.7,
-                            repetition_penalty=1.2,
-                            use_cache=True,
+            # Use press context manager
+            press_context = press(model) if press is not None and not isinstance(press, NonePress) else contextlib.nullcontext()
+            
+            if do_sampling:
+                with press_context:
+                    outputs = model.generate(
+                        inputs["input_ids"],
+                        attention_mask=inputs["attention_mask"],
+                        max_new_tokens=max_new_tokens,
+                        do_sample=True,
+                        top_p=0.9,
+                        temperature=0.7,
+                        repetition_penalty=1.2,
+                        use_cache=True,
+                        output_attentions=output_attentions(press) if press is not None and not isinstance(press, NonePress) else False,
+                    )
+            else:
+                with press_context:
+                    outputs = model.generate(
+                        inputs["input_ids"],
+                        attention_mask=inputs["attention_mask"],
+                        max_new_tokens=max_new_tokens,
+                        do_sample=False,
+                        use_cache=True,
                             output_attentions=output_attentions(press) if press is not None and not isinstance(press, NonePress) else False,
-                        )
-                else:
-                    with press_context:
-                        outputs = model.generate(
-                            inputs["input_ids"],
-                            attention_mask=inputs["attention_mask"],
-                            max_new_tokens=max_new_tokens,
-                            do_sample=False,
-                            use_cache=True,
-                            output_attentions=output_attentions(press) if press is not None and not isinstance(press, NonePress) else False,
-                        )
+                    )
 
             pred_start = inputs["input_ids"].shape[1]
             response = tokenizer.decode(outputs[0][pred_start:], skip_special_tokens=True)
@@ -541,13 +545,15 @@ def evaluate(
             # Add timing metrics to save_obj
             save_obj.update(timing_metrics)
             
-            # Save ranking data only if track_tokens is enabled
-            if track_tokens and press is not None and hasattr(press, 'save_all_ranking_data'):
+            # Save ranking data ONLY if track_tokens is explicitly True
+            # Explicitly check track_tokens == True to prevent saving when False
+            if track_tokens == True and press is not None and hasattr(press, 'save_all_ranking_data'):
                 press.save_all_ranking_data()
             
-            # Track keyword retention and token tracking only if enabled
+            # Track keyword retention and token tracking ONLY if track_tokens is explicitly True
             # Skip all tracking for SeerAttention with NonePress (simplified path)
-            if track_tokens and not is_seer_attention_none:
+            # Explicitly check track_tokens == True to prevent any tracking when False
+            if track_tokens == True and not is_seer_attention_none:
                 # Track keyword retention if press tracks retention
                 # NonePress doesn't track retention, so skip if it's NonePress
                 keyword_retention = {}
@@ -595,17 +601,18 @@ def evaluate(
                 save_obj['keywords'] = keywords
                 save_obj['keyword_retention'] = keyword_retention
                 
-                # Collect per-step token tracking only if track_tokens is enabled
+                # Collect per-step token tracking ONLY if track_tokens is explicitly True
+                # Explicitly check track_tokens == True to prevent any tracking when False
                 generation_steps = []
-                if not is_seer_attention_none and press is not None and not isinstance(press, NonePress) and hasattr(press, 'get_generation_steps'):
+                if track_tokens == True and not is_seer_attention_none and press is not None and not isinstance(press, NonePress) and hasattr(press, 'get_generation_steps'):
                     generation_steps = press.get_generation_steps()
                 
                 # Save generation_steps to save_obj
                 save_obj['generation_steps'] = generation_steps
                 
-                # Save to a separate detailed JSON file ONLY if track_tokens is True
-                # Double-check track_tokens to ensure no tracking files are created when disabled
-                if track_tokens and not is_seer_attention_none and generation_steps:
+                # Save to a separate detailed JSON file ONLY if track_tokens is explicitly True
+                # Explicitly check track_tokens == True to prevent file creation when False
+                if track_tokens == True and not is_seer_attention_none and generation_steps:
                     step_tracking_file = save_filename.with_suffix('.step_tracking.json')
                     step_data = {
                         'question_index': i,
@@ -619,8 +626,9 @@ def evaluate(
                     # Append to file incrementally (one JSON object per line)
                     with open(str(step_tracking_file), "a", encoding='utf-8') as step_f:
                         step_f.write(json.dumps(step_data, indent=2) + "\n")
-            else:
-                # track_tokens is False - set empty tracking data
+            elif track_tokens == False:
+                # track_tokens is explicitly False - set empty tracking data
+                # Ensure no tracking data is saved when track_tokens is False
                 save_obj['keywords'] = {}
                 save_obj['keyword_retention'] = {}
                 save_obj['generation_steps'] = []
