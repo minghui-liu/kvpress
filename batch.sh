@@ -15,7 +15,7 @@ MODEL_NAME="deepseek-ai/DeepSeek-R1-Distill-Llama-8B"
 # sanitize MODEL_NAME for filenames: replace "/" → "--"
 MODEL_FILE="${MODEL_NAME//\//--}"
 
-NUM_SAMPLES=15
+NUM_SAMPLES=30
 RANDOM_SEED=42            # default seed in evaluate.py
 MAX_NEW_TOKENS=2048
 
@@ -38,8 +38,8 @@ datasets=(
 )
 
 # Cache budgets to sweep over
-CACHE_BUDGETS=(512) # 256 384 512
-LAMBS=(0 0.01 0.05 0.1 0.2 0.4 1)
+CACHE_BUDGETS=(384) # 128 256 384 512
+LAMBS=(0 0.01 0.2 1)
 
 # ====== Execution ======
 echo "Starting $PRESS_NAME evaluations"
