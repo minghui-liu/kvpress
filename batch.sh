@@ -25,8 +25,8 @@ RESULT_DIR="reason/results"
 
 # ====== Benchmarks ======
 datasets=(
-  # "gsm8k"               # openai/gsm8k
-  "math500"             # HuggingFaceH4/MATH-500
+  "gsm8k"                # openai/gsm8k
+  # math500"             # HuggingFaceH4/MATH-500
   #"commonsenseqa"       # tau/commonsense_qa
   #"openbookqa"          # allenai/openbookqa
   #"reclor"              # metaeval/reclor
@@ -38,8 +38,8 @@ datasets=(
 )
 
 # Cache budgets to sweep over
-CACHE_BUDGETS=(384) # 128 256 384 512
-LAMBS=(0 0.01 0.2 1)
+CACHE_BUDGETS=(128) # 128 256 384 512
+LAMBS=(0.01)
 
 # ====== Execution ======
 echo "Starting $PRESS_NAME evaluations"
