@@ -29,6 +29,8 @@ class ScorerPress(BasePress):
     cache_budget: int = 0
 
     def __post_init__(self):
+        # Initialize BasePress timing/tracking fields (e.g., measure_latency)
+        super().__post_init__()
         assert 0 <= self.compression_ratio < 1, "Compression ratio must be between 0 and 1"
         
         # Initialize ranking data collection
