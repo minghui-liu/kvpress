@@ -102,6 +102,8 @@ class BasePress:
         self.decoding_time: float = 0.0
         self.total_prefill_tokens: int = 0
         self.total_decoding_tokens: int = 0
+        # Control whether to measure internal latency (set from evaluate.py)
+        self.measure_latency: bool = True
         # Keyword tracking
         self.retained_token_indices: list = []  # List of sets of retained indices per compression step
         self.all_token_indices: list = []  # List of all token indices before compression
@@ -365,9 +367,13 @@ class BasePress:
             keys = layer.keys
             values = layer.values
 
-        torch.cuda.synchronize()
-        torch.cuda.empty_cache()
-        start=time()
+        # Only measure timing if latency measurement is enabled
+        if self.measure_latency:
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+            start = time()
+        else:
+            start = None
 
         if is_prefilling:
             # Track prefilling step before compression
@@ -380,17 +386,19 @@ class BasePress:
                 self._track_decoding_step(module, keys)
             keys, values = self.compress_decoding(module, hidden_states, keys, values, output[1], kwargs)
 
-        torch.cuda.synchronize()
-        torch.cuda.empty_cache()
-        execution_time=time()-start
+        # Only measure timing if latency measurement is enabled
+        if self.measure_latency:
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+            execution_time = time() - start
 
-        # Track timing for prefill vs decoding phases
-        if is_prefilling:
-            self.prefill_time += execution_time
-            self.total_prefill_tokens += q_len
-        else:
-            self.decoding_time += execution_time
-            self.total_decoding_tokens += q_len
+            # Track timing for prefill vs decoding phases
+            if is_prefilling:
+                self.prefill_time += execution_time
+                self.total_prefill_tokens += q_len
+            else:
+                self.decoding_time += execution_time
+                self.total_decoding_tokens += q_len
 
 
         if isinstance(cache, QuantizedCache):

@@ -149,7 +149,9 @@ def evaluate(
     key_channel_compression_ratio: float = 0.5,
     n_hash_buckets: int = 6,
     lam:float=0.1,
-    track_tokens: bool = False
+    track_tokens: bool = False,
+    measure_memory: bool = True,
+    measure_latency: bool = True
 ):
     """
     Evaluate a model on a dataset using a press and save the results
@@ -188,6 +190,10 @@ def evaluate(
         Whether to skip existing files, by default True
     key_channel_compression_ratio : float, optional
         key Channel Compression ratio for the channel press, by default 0.5
+    measure_memory : bool, optional
+        Whether to measure GPU memory usage, by default True
+    measure_latency : bool, optional
+        Whether to measure execution latency, by default True
     """
 
     assert dataset in DATASET_DICT, f"No dataset found for {dataset}"
@@ -273,6 +279,9 @@ def evaluate(
         # Set the cache budget for the press (NonePress doesn't use it, but set it anyway)
         if press is not None:
             press.cache_budget = cache_budget
+            # Set measure_latency flag to control internal timing
+            if hasattr(press, 'measure_latency'):
+                press.measure_latency = measure_latency
 
         if press_name=="rkvlsh" and press is not None:
             press.n_hash_buckets=n_hash_buckets
@@ -353,7 +362,8 @@ def evaluate(
             # Aggressive memory cleanup at the START of each sample to prevent accumulation
             import gc
             torch.cuda.empty_cache()
-            torch.cuda.synchronize()
+            if measure_memory:  # Only synchronize if measuring memory
+                torch.cuda.synchronize()
             gc.collect()
             
             input_text, gt_answer_text = formatter(example)
@@ -364,12 +374,18 @@ def evaluate(
                 max_new_tokens = 16 * 1024 - inputs["input_ids"].shape[1] # use 16k for max length for now
 
             # Reset memory stats and clear cache before generation
-            torch.cuda.reset_peak_memory_stats()
-            torch.cuda.empty_cache()
+            if measure_memory:
+                torch.cuda.reset_peak_memory_stats()
+                torch.cuda.empty_cache()
 
-            torch.cuda.synchronize()
-            torch.cuda.empty_cache()
-            start=time()
+            # Synchronize before timing only if measuring latency for accurate measurements
+            if measure_latency:
+                torch.cuda.synchronize()
+                if not measure_memory:  # Only clear cache if not already done for memory measurement
+                    torch.cuda.empty_cache()
+                start=time()
+            else:
+                start = None
 
             # Special handling for SeerAttention with NonePress: use simplified inference path
             # This bypasses all press infrastructure to avoid cache initialization issues
@@ -508,9 +524,21 @@ def evaluate(
             output_token_count = outputs[0].shape[0] - input_token_count
             total_token_count = outputs[0].shape[0]
             
-            peak_memory = torch.cuda.max_memory_allocated()
-            memory_usage=peak_memory / 1024**3
-            execution_time=time()-start
+            # Measure memory only if requested
+            if measure_memory:
+                if measure_latency:
+                    torch.cuda.synchronize()  # Ensure all operations complete before reading memory
+                peak_memory = torch.cuda.max_memory_allocated()
+                memory_usage = peak_memory / 1024**3
+            else:
+                memory_usage = 0.0
+            
+            # Measure latency only if requested
+            if measure_latency:
+                torch.cuda.synchronize()  # Ensure all operations complete before timing
+                execution_time = time() - start
+            else:
+                execution_time = 0.0
             
             # For NonePress, no compression is applied
             if press is None or isinstance(press, NonePress):
@@ -558,8 +586,9 @@ def evaluate(
             
             # Clear CUDA cache and reset stats
             torch.cuda.empty_cache()
-            torch.cuda.synchronize()
-            torch.cuda.reset_peak_memory_stats()
+            if measure_memory:  # Only synchronize and reset if measuring memory
+                torch.cuda.synchronize()
+                torch.cuda.reset_peak_memory_stats()
             
             # Force Python garbage collection (multiple passes for thorough cleanup)
             import gc
@@ -686,8 +715,9 @@ def evaluate(
                 
                 # Aggressive CUDA cleanup
                 torch.cuda.empty_cache()
-                torch.cuda.synchronize()
-                torch.cuda.reset_peak_memory_stats()
+                if measure_memory:  # Only synchronize and reset if measuring memory
+                    torch.cuda.synchronize()
+                    torch.cuda.reset_peak_memory_stats()
                 import gc
                 gc.collect()
                 gc.collect()  # Second pass
@@ -710,7 +740,17 @@ def evaluate(
     avg_compression = sum([obj["compression_ratio"] for obj in save_obj]) / len(save_obj)
     metrics["avg_compression"] = avg_compression
     
-    # Add timing metrics averages
+    # Add memory metrics if measured
+    if measure_memory and save_obj:
+        metrics["avg_memory_usage_gb"] = sum([obj.get("memory_usage", 0.0) for obj in save_obj]) / len(save_obj)
+        metrics["max_memory_usage_gb"] = max([obj.get("memory_usage", 0.0) for obj in save_obj])
+    
+    # Add latency metrics if measured
+    if measure_latency and save_obj:
+        metrics["avg_execution_time"] = sum([obj.get("execution_time", 0.0) for obj in save_obj]) / len(save_obj)
+        metrics["total_execution_time"] = sum([obj.get("execution_time", 0.0) for obj in save_obj])
+    
+    # Add timing metrics averages (from press internal timing)
     if save_obj and "prefill_time" in save_obj[0]:
         metrics["avg_prefill_time"] = sum([obj["prefill_time"] for obj in save_obj]) / len(save_obj)
         metrics["avg_decoding_time"] = sum([obj["decoding_time"] for obj in save_obj]) / len(save_obj)
@@ -734,6 +774,8 @@ def evaluate(
     metrics["max_new_tokens"] = max_new_tokens
     metrics["max_context_length"] = max_context_length
     metrics["random_seed"] = random_seed
+    metrics["measure_memory"] = measure_memory
+    metrics["measure_latency"] = measure_latency
 
     with open(str(score_filename), "w") as f:
         json.dump(metrics, f)

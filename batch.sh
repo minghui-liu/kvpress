@@ -11,11 +11,11 @@ set -euo pipefail
 PRESS_NAME="rkvlsh"
 
 # Model and dataset settings
-MODEL_NAME="deepseek-ai/DeepSeek-R1-Distill-Llama-8B"
+MODEL_NAME=(deepseek-ai/DeepSeek-R1-Distill-Llama-8B", deepseek-ai/DeepSeek-R1-Distill-Qwen-7B", "deepseek-ai/DeepSeek-R1-Distill-Qwen-14B", nvidia/Llama-3.1-Nemotron-Nano-8B-v1, meta-llama/Meta-Llama-3-8B)
 # sanitize MODEL_NAME for filenames: replace "/" → "--"
 MODEL_FILE="${MODEL_NAME//\//--}"
 
-NUM_SAMPLES=30
+NUM_SAMPLES=0
 RANDOM_SEED=42            # default seed in evaluate.py
 MAX_NEW_TOKENS=2048
 
@@ -26,19 +26,20 @@ RESULT_DIR="reason/results"
 # ====== Benchmarks ======
 datasets=(
   "gsm8k"                # openai/gsm8k
-  # math500"             # HuggingFaceH4/MATH-500
+  "math500"             # HuggingFaceH4/MATH-500
   #"commonsenseqa"       # tau/commonsense_qa
   #"openbookqa"          # allenai/openbookqa
   #"reclor"              # metaeval/reclor
   #"drop"                # ucinlp/drop
   #"strategyqa"          # ChilleD/StrategyQA
   #"folio"
-  #  "aime25"
+  "aime24"
+  "aime25"
   #  "logiqa"
 )
 
 # Cache budgets to sweep over
-CACHE_BUDGETS=(128) # 128 256 384 512
+CACHE_BUDGETS=(128 256 384 512)
 LAMBS=(0.01)
 
 # ====== Execution ======
