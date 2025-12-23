@@ -17,6 +17,7 @@ from transformers import (
     QuantizedCache,
     Qwen2ForCausalLM,
 )
+from time import time
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +61,7 @@ class BasePress:
         tuple[torch.Tensor, torch.Tensor]
             Updated keys and values
         """
-        raise NotImplementedError("compress method must be implemented in subclass")
+        raise NotImplementedError("compress_prefilling method must be implemented in subclass")
 
 
     def compress_decoding(
@@ -95,6 +96,237 @@ class BasePress:
         """
         raise NotImplementedError("compress method must be implemented in subclass")
 
+    def __post_init__(self):
+        """Initialize timing tracking attributes"""
+        self.prefill_time: float = 0.0
+        self.decoding_time: float = 0.0
+        self.total_prefill_tokens: int = 0
+        self.total_decoding_tokens: int = 0
+        # Control whether to measure internal latency (set from evaluate.py)
+        self.measure_latency: bool = True
+        # Keyword tracking
+        self.retained_token_indices: list = []  # List of sets of retained indices per compression step
+        self.all_token_indices: list = []  # List of all token indices before compression
+        
+        # Per-step token tracking during generation
+        self.generation_steps: list = []  # List of dicts with step info: {step, all_tokens, retained_tokens, evicted_tokens, newly_added_tokens}
+        self.current_generation_step: int = 0
+        self.previous_cache_tokens: set = set()  # Track what tokens were in the KV cache at the end of previous step (after compression)
+
+    def reset_timing(self):
+        """Reset timing counters"""
+        self.prefill_time = 0.0
+        self.decoding_time = 0.0
+        self.total_prefill_tokens = 0
+        self.total_decoding_tokens = 0
+        # Reset keyword tracking
+        self.retained_token_indices = []
+        self.all_token_indices = []
+        # Reset per-step tracking
+        self.generation_steps = []
+        self.current_generation_step = 0
+        self.previous_cache_tokens = set()
+    
+    def track_retention(self, all_indices: list, retained_indices: list):
+        """Track which tokens were retained in the cache"""
+        self.all_token_indices.append(all_indices.copy())
+        self.retained_token_indices.append(retained_indices.copy())
+    
+    def get_final_retained_indices(self) -> set:
+        """Get the final set of retained token indices after all compressions"""
+        if not self.retained_token_indices:
+            return set()
+        # Return the intersection of all retained indices (tokens that survived all compressions)
+        final = set(self.retained_token_indices[0])
+        for retained in self.retained_token_indices[1:]:
+            final = final & set(retained)
+        return final
+    
+    def track_generation_step(self, all_token_ids: list, retained_token_ids: list, tokenizer=None):
+        """
+        Track token retention/eviction at each generation step during decoding.
+        Early return if tokenizer is None (tracking disabled).
+        
+        This updates the last entry created by _track_decoding_step with compression results.
+        
+        During decoding:
+        - Tokens are removed from KV cache during compression (evicted)
+        - New tokens are added to KV cache (the newly generated token)
+        
+        Parameters
+        ----------
+        all_token_ids : list
+            All token IDs in the KV cache at this step (before compression)
+            This includes: previous_cache_tokens + newly generated token
+        retained_token_ids : list
+            Token IDs that were retained in the KV cache (after compression)
+        tokenizer : optional
+            Tokenizer to decode tokens to text
+        """
+        # Early return if tokenizer is None (tracking disabled)
+        if tokenizer is None:
+            return
+            
+        all_token_set = set(all_token_ids)
+        current_retained_set = set(retained_token_ids)
+        
+        # Tokens that were in cache BEFORE compression = previous_cache + newly generated token
+        # Tokens that were in cache AFTER compression = retained_token_ids
+        
+        # Compute tokens that were evicted (removed from cache during compression)
+        # These are tokens that were in the cache before compression but not after
+        evicted_token_ids = list(all_token_set - current_retained_set)
+        
+        # Compute tokens that were newly added to the cache
+        # These are tokens in current retained set that weren't in previous cache
+        # (typically the newly generated token that was added and retained)
+        newly_added_token_ids = list(current_retained_set - self.previous_cache_tokens)
+        
+        # Also track what was in cache before compression for reference
+        previous_cache_token_ids = list(self.previous_cache_tokens)
+        
+        # Count tokens
+        num_evicted = len(evicted_token_ids)
+        num_newly_added = len(newly_added_token_ids)
+        
+        # Update the last entry (created by _track_decoding_step) with compression results
+        if self.generation_steps and 'all_tokens_before_compression' in self.generation_steps[-1]:
+            # Update existing entry
+            step_info = self.generation_steps[-1]
+            step_info['retained_tokens'] = retained_token_ids.copy()
+            step_info['evicted_tokens'] = evicted_token_ids.copy()
+            step_info['newly_added_tokens'] = newly_added_token_ids.copy()
+            step_info['num_evicted'] = num_evicted
+            step_info['num_newly_added'] = num_newly_added
+            step_info['note'] = f'Decoding step: {num_newly_added} tokens newly retained, {num_evicted} tokens evicted'
+            
+            step_info['retained_tokens_text'] = [tokenizer.decode([tid], skip_special_tokens=True) if isinstance(tid, int) else str(tid) for tid in retained_token_ids]
+            step_info['evicted_tokens_text'] = [tokenizer.decode([tid], skip_special_tokens=True) if isinstance(tid, int) else str(tid) for tid in evicted_token_ids]
+            step_info['newly_added_tokens_text'] = [tokenizer.decode([tid], skip_special_tokens=True) if isinstance(tid, int) else str(tid) for tid in newly_added_token_ids]
+        else:
+            # Create new entry if last entry doesn't exist or is already complete
+            step_info = {
+                'step': self.current_generation_step,
+                'phase': 'decoding',
+                'note': f'Decoding step: {num_newly_added} tokens newly retained, {num_evicted} tokens evicted',
+                'previous_cache_tokens': previous_cache_token_ids.copy(),
+                'all_tokens_before_compression': all_token_ids.copy(),
+                'retained_tokens': retained_token_ids.copy(),
+                'evicted_tokens': evicted_token_ids.copy(),
+                'newly_added_tokens': newly_added_token_ids.copy(),
+                'num_evicted': num_evicted,
+                'num_newly_added': num_newly_added
+            }
+            
+            step_info['previous_cache_tokens_text'] = [tokenizer.decode([tid], skip_special_tokens=True) if isinstance(tid, int) else str(tid) for tid in previous_cache_token_ids]
+            step_info['all_tokens_before_compression_text'] = [tokenizer.decode([tid], skip_special_tokens=True) if isinstance(tid, int) else str(tid) for tid in all_token_ids]
+            step_info['retained_tokens_text'] = [tokenizer.decode([tid], skip_special_tokens=True) if isinstance(tid, int) else str(tid) for tid in retained_token_ids]
+            step_info['evicted_tokens_text'] = [tokenizer.decode([tid], skip_special_tokens=True) if isinstance(tid, int) else str(tid) for tid in evicted_token_ids]
+            step_info['newly_added_tokens_text'] = [tokenizer.decode([tid], skip_special_tokens=True) if isinstance(tid, int) else str(tid) for tid in newly_added_token_ids]
+            
+        self.generation_steps.append(step_info)
+        self.current_generation_step += 1
+        
+        # Update for next step: what's in cache now (after compression)
+        self.previous_cache_tokens = current_retained_set.copy()
+    
+    def _track_prefilling_step(self, module: nn.Module, keys: torch.Tensor):
+        """Track a prefilling step."""
+        # Early return if tokenizer or input_tokens is None (tracking disabled)
+        if self.tokenizer is None or self.input_tokens is None:
+            return
+        kv_len = keys.shape[2]
+        
+        # For prefilling, track that we're in prefilling phase
+        if kv_len <= len(self.input_tokens):
+            all_token_ids = self.input_tokens[:kv_len].cpu().tolist()
+        else:
+            all_token_ids = self.input_tokens.cpu().tolist() + list(range(len(self.input_tokens), kv_len))
+        
+        step_info = {
+            'step': self.current_generation_step,
+            'phase': 'prefilling',
+            'note': 'Prefilling phase - processing input tokens',
+            'all_tokens': all_token_ids.copy(),
+            'retained_tokens': all_token_ids.copy(),  # All tokens retained during prefilling
+            'evicted_tokens': [],
+            'newly_added_tokens': all_token_ids.copy(),  # All tokens are newly added during prefilling
+            'previous_cache_tokens': [],
+            'num_evicted': 0,
+            'num_newly_added': len(all_token_ids)
+        }
+        
+        step_info['all_tokens_text'] = [self.tokenizer.decode([tid], skip_special_tokens=True) if isinstance(tid, int) else str(tid) for tid in all_token_ids]
+        step_info['retained_tokens_text'] = step_info['all_tokens_text'].copy()
+        step_info['evicted_tokens_text'] = []
+        step_info['newly_added_tokens_text'] = step_info['all_tokens_text'].copy()
+        step_info['previous_cache_tokens_text'] = []
+        
+        self.generation_steps.append(step_info)
+        self.current_generation_step += 1
+        
+        # Update previous cache tokens for next step
+        self.previous_cache_tokens = set(all_token_ids)
+    
+    def _track_decoding_step(self, module: nn.Module, keys: torch.Tensor):
+        """Track a decoding step - called once per token generation at layer 0."""
+        # Early return if tokenizer or input_tokens is None (tracking disabled)
+        if self.tokenizer is None or self.input_tokens is None:
+            return
+        kv_len = keys.shape[2]
+        
+        # Get all tokens in cache before compression
+        if kv_len <= len(self.input_tokens):
+            all_token_ids = self.input_tokens[:kv_len].cpu().tolist()
+        else:
+            # Input tokens + generated tokens
+            all_token_ids = self.input_tokens.cpu().tolist() + list(range(len(self.input_tokens), kv_len))
+        
+        step_info = {
+            'step': self.current_generation_step,
+            'phase': 'decoding',
+            'all_tokens_before_compression': all_token_ids.copy(),
+            'previous_cache_tokens': list(self.previous_cache_tokens),
+            'retained_tokens': all_token_ids.copy(),  # Default: all retained if no compression
+            'evicted_tokens': [],
+            'newly_added_tokens': list(set(all_token_ids) - self.previous_cache_tokens),
+            'num_evicted': 0,
+            'num_newly_added': len(set(all_token_ids) - self.previous_cache_tokens),
+            'note': f'Decoding step: {len(set(all_token_ids) - self.previous_cache_tokens)} tokens newly retained, 0 tokens evicted'
+        }
+        
+        step_info['all_tokens_before_compression_text'] = [self.tokenizer.decode([tid], skip_special_tokens=True) if isinstance(tid, int) else str(tid) for tid in all_token_ids]
+        step_info['previous_cache_tokens_text'] = [self.tokenizer.decode([tid], skip_special_tokens=True) if isinstance(tid, int) else str(tid) for tid in self.previous_cache_tokens]
+        step_info['retained_tokens_text'] = step_info['all_tokens_before_compression_text'].copy()
+        step_info['evicted_tokens_text'] = []
+        step_info['newly_added_tokens_text'] = [self.tokenizer.decode([tid], skip_special_tokens=True) if isinstance(tid, int) else str(tid) for tid in step_info['newly_added_tokens']]
+        
+        self.generation_steps.append(step_info)
+        self.current_generation_step += 1
+        
+        # Update previous cache tokens for next step (will be updated again after compression if it happens)
+        self.previous_cache_tokens = set(all_token_ids)
+    
+    def get_generation_steps(self) -> list:
+        """Get all tracked generation steps"""
+        # If tokenizer is not set, return empty list (tracking disabled)
+        if self.tokenizer is None:
+            return []
+        return self.generation_steps.copy()
+
+    def get_timing_metrics(self):
+        """Get timing metrics for performance analysis"""
+        total_time = self.prefill_time + self.decoding_time
+        output_tokens_per_second = self.total_decoding_tokens / self.decoding_time if self.decoding_time > 0 else 0.0
+        
+        return {
+            "prefill_time": self.prefill_time,
+            "decoding_time": self.decoding_time,
+            "total_time": total_time,
+            "total_prefill_tokens": self.total_prefill_tokens,
+            "total_decoding_tokens": self.total_decoding_tokens,
+            "output_tokens_per_second": output_tokens_per_second
+        }
     
     def forward_hook(self, module: nn.Module, input: list[torch.Tensor], kwargs: dict, output: list):
         """
@@ -119,9 +351,8 @@ class BasePress:
             Modified output of the forward pass of the layer.
 
         """
-
         hidden_states = kwargs["hidden_states"]
-        cache = kwargs["past_key_value"]
+        cache = kwargs["past_key_values"]
         q_len = hidden_states.shape[1]
 
         is_prefilling = kwargs["cache_position"][-1] <= q_len
@@ -130,13 +361,45 @@ class BasePress:
             keys = cache._dequantize(cache._quantized_key_cache[module.layer_idx])
             values = cache._dequantize(cache._quantized_value_cache[module.layer_idx])
         else:
-            keys = cache.key_cache[module.layer_idx]
-            values = cache.value_cache[module.layer_idx]
+            # In new transformers version, cache.layers returns DynamicLayer objects
+            # Access key and value tensors from the layer
+            layer = cache.layers[module.layer_idx]
+            keys = layer.keys
+            values = layer.values
+
+        # Only measure timing if latency measurement is enabled
+        if self.measure_latency:
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+            start = time()
+        else:
+            start = None
 
         if is_prefilling:
+            # Track prefilling step before compression
+            self._track_prefilling_step(module, keys)
             keys, values = self.compress_prefilling(module, hidden_states, keys, values, output[1], kwargs)
         else:
+            # Track decoding step at layer 0 (once per token generation)
+            layer_idx = getattr(module, "layer_idx", 0)
+            if layer_idx == 0:
+                self._track_decoding_step(module, keys)
             keys, values = self.compress_decoding(module, hidden_states, keys, values, output[1], kwargs)
+
+        # Only measure timing if latency measurement is enabled
+        if self.measure_latency:
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+            execution_time = time() - start
+
+            # Track timing for prefill vs decoding phases
+            if is_prefilling:
+                self.prefill_time += execution_time
+                self.total_prefill_tokens += q_len
+            else:
+                self.decoding_time += execution_time
+                self.total_decoding_tokens += q_len
+
 
         if isinstance(cache, QuantizedCache):
             cache._quantized_key_cache[module.layer_idx] = cache._quantize(keys, axis=cache.axis_key)
@@ -145,8 +408,9 @@ class BasePress:
             cache.value_cache[module.layer_idx] = torch.zeros(0, dtype=keys.dtype, device=keys.device)
             cache._seen_tokens = keys.shape[2]
         else:
-            cache.key_cache[module.layer_idx] = keys
-            cache.value_cache[module.layer_idx] = values
+            layer = cache.layers[module.layer_idx]
+            layer.keys = keys
+            layer.values = values
 
         return output
 

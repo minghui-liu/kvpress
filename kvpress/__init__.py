@@ -28,7 +28,9 @@ from kvpress.presses.pyramidkv_press import PyramidKVPress
 from kvpress.presses.finch_press import FinchPress
 from kvpress.presses.h2o_press import H2OPress
 from kvpress.presses.full_press import FullPress
+from kvpress.presses.none_press import NonePress
 from kvpress.presses.rkv_press import RKVPress
+from kvpress.presses.rkv_press_lsh import RKVLSHPress
 
 # Patch the attention functions to support head-wise compression
 patch_attention_functions()
@@ -60,5 +62,7 @@ __all__ = [
     "FinchPress",
     "H2OPress",
     "FullPress",
+    "NonePress",
     "RKVPress",
+    "RKVLSHPress",
 ]
