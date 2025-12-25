@@ -316,7 +316,6 @@ def evaluate(
                 device_map="auto",
                 trust_remote_code=True,
                 torch_dtype="auto",
-                **model_kwargs,
             )
             # Load tokenizer with trust_remote_code=True and padding_side="left" for generation
             tokenizer = AutoTokenizer.from_pretrained(
@@ -330,8 +329,7 @@ def evaluate(
                 model_name,
                 device_map="auto",
                 trust_remote_code=True,
-                torch_dtype="auto",
-                **model_kwargs,
+                torch_dtype="auto"
             )
             tokenizer = AutoTokenizer.from_pretrained(
                 model_name, 
