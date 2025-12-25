@@ -340,6 +340,20 @@ def evaluate(
         # Set pad token to eos token if not already set (required for generation)
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
+        
+        # Add special token artifact characters so skip_special_tokens will filter them
+        # These appear in tokenizer outputs even though skip_special_tokens=True is used
+        special_artifacts = ["\u0120", "\u010a", "\u0109"]
+        special_tokens_to_add = []
+        for artifact in special_artifacts:
+            if artifact not in tokenizer.all_special_tokens:
+                special_tokens_to_add.append(artifact)
+        if special_tokens_to_add:
+            # Add these as additional special tokens
+            tokenizer.add_special_tokens({
+                "additional_special_tokens": special_tokens_to_add
+            })
+
 
         # Run generation on each context of the dataset
         # Results are written incrementally, so we don't need to store them in memory
@@ -399,6 +413,8 @@ def evaluate(
                         temperature=0.7,
                         repetition_penalty=1.2,
                         use_cache=True,
+                        eos_token_id=tokenizer.eos_token_id,
+                        pad_token_id=tokenizer.pad_token_id,
                         output_attentions=False,
                     )
                 else:
@@ -408,12 +424,18 @@ def evaluate(
                         max_new_tokens=max_new_tokens,
                         do_sample=False,
                         use_cache=True,
+                        eos_token_id=tokenizer.eos_token_id,
+                        pad_token_id=tokenizer.pad_token_id,
                         output_attentions=False,
                     )
                 
                 # Decode response for SeerAttention path
                 pred_start = inputs["input_ids"].shape[1]
                 response = tokenizer.decode(outputs[0][pred_start:], skip_special_tokens=True)
+                # Clean up special token artifacts (\u0120 = Ġ, \u010a = Ċ, etc.)
+                response = response.replace("\u0120", " ").replace("\u010a", " ").replace("\u0109", " ")
+                # Remove other control characters while preserving spaces and newlines
+                response = "".join(c if ord(c) >= 32 or c in "\n\r\t" else "" for c in response)
                 model_answer = extractor(response)
             else:
                 # Standard path with press infrastructure
@@ -481,6 +503,8 @@ def evaluate(
                             temperature=0.7,
                             repetition_penalty=1.2,
                             use_cache=True,
+                            eos_token_id=tokenizer.eos_token_id,
+                            pad_token_id=tokenizer.pad_token_id,
                             output_attentions=output_attentions(press) if press is not None and not isinstance(press, NonePress) else False,
                         )
                 else:
@@ -491,12 +515,18 @@ def evaluate(
                             max_new_tokens=max_new_tokens,
                             do_sample=False,
                             use_cache=True,
+                            eos_token_id=tokenizer.eos_token_id,
+                            pad_token_id=tokenizer.pad_token_id,
                             output_attentions=output_attentions(press) if press is not None and not isinstance(press, NonePress) else False,
                         )
                 
                 # Decode response for standard path
                 pred_start = inputs["input_ids"].shape[1]
                 response = tokenizer.decode(outputs[0][pred_start:], skip_special_tokens=True)
+                # Clean up special token artifacts (\u0120 = Ġ, \u010a = Ċ, etc.)
+                response = response.replace("\u0120", " ").replace("\u010a", " ").replace("\u0109", " ")
+                # Remove other control characters while preserving spaces and newlines
+                response = "".join(c if ord(c) >= 32 or c in "\n\r\t" else "" for c in response)
                 model_answer = extractor(response)
 
             # Get timing metrics from press if available (before deleting tensors)

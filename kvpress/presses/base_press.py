@@ -411,6 +411,9 @@ class BasePress:
             layer = cache.layers[module.layer_idx]
             layer.keys = keys
             layer.values = values
+            # Ensure layer metadata matches compressed sequence length
+            if hasattr(layer, "seen_tokens"):
+                layer.seen_tokens = keys.shape[2]
 
         return output
 
