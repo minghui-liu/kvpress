@@ -290,16 +290,8 @@ def evaluate(
 
 
         # Initialize pipeline with the correct attention implementation
-        model_kwargs = {}
-        if press is not None and isinstance(press, H2OPress):
-            model_kwargs["attn_implementation"] = "eager"
-        else:
-            try:
-                import flash_attn  # noqa: F401
-                model_kwargs["attn_implementation"] = "flash_attention_2"
-                print("Using flash attention")
-            except ImportError:
-                pass
+        # Force eager attention to avoid flash-attn dependency/instability
+        model_kwargs = {"attn_implementation": "eager"}
 
         # Load model and tokenizer
         if "SeerAttention" in model_name:
@@ -429,6 +421,8 @@ def evaluate(
                 # Decode response for SeerAttention path
                 pred_start = inputs["input_ids"].shape[1]
                 response = tokenizer.decode(outputs[0][pred_start:], skip_special_tokens=True)
+                # Strip special space token artifacts (e.g., \u0120) for cleaner outputs
+                response = response.replace("\u0120", " ")
                 model_answer = extractor(response)
             else:
                 # Standard path with press infrastructure
@@ -512,6 +506,8 @@ def evaluate(
                 # Decode response for standard path
                 pred_start = inputs["input_ids"].shape[1]
                 response = tokenizer.decode(outputs[0][pred_start:], skip_special_tokens=True)
+                # Strip special space token artifacts (e.g., \u0120) for cleaner outputs
+                response = response.replace("\u0120", " ")
                 model_answer = extractor(response)
 
             # Get timing metrics from press if available (before deleting tensors)

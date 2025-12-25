@@ -11,13 +11,14 @@ set -euo pipefail
 PRESS_NAME="rkvlsh"
 
 # Model and dataset settings
-MODEL_NAME=(deepseek-ai/DeepSeek-R1-Distill-Llama-8B", deepseek-ai/DeepSeek-R1-Distill-Qwen-7B", "deepseek-ai/DeepSeek-R1-Distill-Qwen-14B", nvidia/Llama-3.1-Nemotron-Nano-8B-v1, meta-llama/Meta-Llama-3-8B)
+MODEL_NAME=(deepseek-ai/DeepSeek-R1-Distill-Llama-8B)
+# deepseek-ai/DeepSeek-R1-Distill-Llama-8B, deepseek-ai/DeepSeek-R1-Distill-Qwen-7B deepseek-ai/DeepSeek-R1-Distill-Qwen-14B nvidia/Llama-3.1-Nemotron-Nano-8B-v1 meta-llama/Meta-Llama-3-8B
 # sanitize MODEL_NAME for filenames: replace "/" → "--"
 MODEL_FILE="${MODEL_NAME//\//--}"
 
-NUM_SAMPLES=0
+NUM_SAMPLES=3
 RANDOM_SEED=42            # default seed in evaluate.py
-MAX_NEW_TOKENS=2048
+MAX_NEW_TOKENS=32768
 
 # Paths
 SCRIPT_PATH="reason/evaluate.py"
@@ -25,8 +26,8 @@ RESULT_DIR="reason/results"
 
 # ====== Benchmarks ======
 datasets=(
-  "gsm8k"                # openai/gsm8k
-  "math500"             # HuggingFaceH4/MATH-500
+  #"gsm8k"                # openai/gsm8k
+  # "math500"             # HuggingFaceH4/MATH-500
   #"commonsenseqa"       # tau/commonsense_qa
   #"openbookqa"          # allenai/openbookqa
   #"reclor"              # metaeval/reclor
@@ -34,12 +35,12 @@ datasets=(
   #"strategyqa"          # ChilleD/StrategyQA
   #"folio"
   "aime24"
-  "aime25"
+  # "aime25"
   #  "logiqa"
 )
 
 # Cache budgets to sweep over
-CACHE_BUDGETS=(128 256 384 512)
+CACHE_BUDGETS=(1024)
 LAMBS=(0.01)
 
 # ====== Execution ======
