@@ -166,11 +166,11 @@ class RKVPress(ScorerPress):
         if self.cache_budget >= kv_len:
             # All tokens retained, track if needed
             if layer_idx == 0:
-                if self.input_tokens is not None and kv_len <= len(self.input_tokens):
+                if self.tokenizer is not None and self.input_tokens is not None and kv_len <= len(self.input_tokens):
                     all_token_ids = self.input_tokens[:kv_len].cpu().tolist()
                     retained_token_ids = all_token_ids.copy()
                     self.track_generation_step(all_token_ids, retained_token_ids, self.tokenizer)
-                elif self.input_tokens is not None:
+                elif self.tokenizer is not None and self.input_tokens is not None:
                     all_token_ids = self.input_tokens.cpu().tolist() + list(range(len(self.input_tokens), kv_len))
                     retained_token_ids = all_token_ids.copy()
                     self.track_generation_step(all_token_ids, retained_token_ids, self.tokenizer)
@@ -197,7 +197,7 @@ class RKVPress(ScorerPress):
         # Track token retention/eviction at first layer only
         if layer_idx == 0:
             # Map position indices to actual token IDs
-            if self.input_tokens is not None:
+            if self.tokenizer is not None and self.input_tokens is not None:
                 if kv_len <= len(self.input_tokens):
                     all_token_ids = self.input_tokens[:kv_len].cpu().tolist()
                     retained_positions = indices[0, 0, :, 0].cpu().tolist()  # Get retained position indices

@@ -283,9 +283,8 @@ class RKVLSHPress(ScorerPress):
                 # Default: use config hidden_size or fallback to 4096
                 self.hidden_size = getattr(module.config, 'hidden_size', 4096)
         
-        # Initialize acc_hidden_states if it's None (even if hidden_size was already set)
-        # This handles the case where acc_hidden_states was deleted during cleanup
-        if self.acc_hidden_states is None:
+        # Always ensure acc_hidden_states exists and is on correct device
+        if self.acc_hidden_states is None or self.acc_hidden_states.device != device:
             self.acc_hidden_states = torch.zeros(
                 (1, self.compress_interval, self.hidden_size), dtype=torch.bfloat16, device=device
             )
