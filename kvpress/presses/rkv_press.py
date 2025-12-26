@@ -141,8 +141,9 @@ class RKVPress(ScorerPress):
             else:
                 # Default: use config hidden_size or fallback to 4096
                 self.hidden_size = getattr(module.config, 'hidden_size', 4096)
-            
-            # Initialize acc_hidden_states with correct size
+        
+        # Always ensure acc_hidden_states exists and is on correct device
+        if self.acc_hidden_states is None or self.acc_hidden_states.device != device:
             self.acc_hidden_states = torch.zeros(
                 (1, self.compress_interval, self.hidden_size), dtype=torch.bfloat16, device=device
             )
@@ -175,7 +176,7 @@ class RKVPress(ScorerPress):
                     self.track_generation_step(all_token_ids, retained_token_ids, self.tokenizer)
             return keys, values
         
-        # Initialize hidden size if not set
+        # Initialize hidden size if not set (must be done before using acc_hidden_states)
         device = hidden_states.device
         self._get_hidden_size(module, device=device)
         
