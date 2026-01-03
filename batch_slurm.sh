@@ -16,9 +16,7 @@ source /home/dixi/.cache/pypoetry/virtualenvs/kvpress-CimsZS3I-py3.10/bin/activa
 
 # Huggingface
 export HF_HOME=/net/projects2/litian-lab/dixi/cache/
-
 export CUDA_LAUNCH_BLOCKING=1
-huggingface-cli login --token $HUGGINGFACE_TOKEN
 
 # Paths
 SCRIPT_PATH="reason/evaluate.py"
