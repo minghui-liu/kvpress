@@ -16,7 +16,8 @@ class FullPress(BasePress):
         layer_idx = getattr(module, "layer_idx", 0)
         
         # Track at first layer only to avoid duplicates
-        if layer_idx == 0:
+        # Follow same safety pattern as rkv_press and rkv_press_lsh
+        if layer_idx == 0 and self.tokenizer is not None and self.input_tokens is not None:
             if kv_len <= len(self.input_tokens):
                 all_token_ids = self.input_tokens[:kv_len].cpu().tolist()
                 retained_token_ids = all_token_ids.copy()  # All tokens retained in FullPress

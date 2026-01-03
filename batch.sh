@@ -1,113 +1,174 @@
-nvidia-smi
+#!/bin/bash
+#SBATCH --job-name=full
+#SBATCH --partition=litian,general
+#SBATCH --mem=32GB
+#SBATCH --gres=gpu:a100:1
+#SBATCH --cpus-per-task=4
+#SBATCH --ntasks=1
+#SBATCH --array=0-31
+#SBATCH --output=logs/%x_%A_%a.out
+#SBATCH --error=logs/%x_%A_%a.err
 
-export HF_HOME=../cache/
-# export HUGGINGFACE_TOKEN="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"
-export CUDA_LAUNCH_BLOCKING=1
-huggingface-cli login --token $HUGGINGFACE_TOKEN
 set -euo pipefail
 
-# ====== User-editable settings ======
-# Set the press to evaluate (e.g. rkv, h2o, snapkv, knorm, full)
-PRESS_NAME="rkvlsh"
+# =====================
+# Environment
+# =====================
+source /home/dixi/.cache/pypoetry/virtualenvs/kvpress-CimsZS3I-py3.10/bin/activate
 
-# Model and dataset settings
-MODEL_NAME=(deepseek-ai/DeepSeek-R1-Distill-Llama-8B)
-# deepseek-ai/DeepSeek-R1-Distill-Llama-8B, deepseek-ai/DeepSeek-R1-Distill-Qwen-7B deepseek-ai/DeepSeek-R1-Distill-Qwen-14B nvidia/Llama-3.1-Nemotron-Nano-8B-v1 meta-llama/Meta-Llama-3-8B
-# sanitize MODEL_NAME for filenames: replace "/" → "--"
-MODEL_FILE="${MODEL_NAME//\//--}"
-
-NUM_SAMPLES=3
-RANDOM_SEED=42            # default seed in evaluate.py
-MAX_NEW_TOKENS=32768
-
+# =====================
+# Hugging Face / CUDA
+# =====================
+export HF_HOME=/net/projects2/litian-lab/dixi/cache/
+export CUDA_LAUNCH_BLOCKING=1
+# =====================
 # Paths
+# =====================
 SCRIPT_PATH="reason/evaluate.py"
 RESULT_DIR="reason/results"
+mkdir -p logs "$RESULT_DIR"
 
-# ====== Benchmarks ======
-datasets=(
-  #"gsm8k"                # openai/gsm8k
-  # "math500"             # HuggingFaceH4/MATH-500
-  #"commonsenseqa"       # tau/commonsense_qa
-  #"openbookqa"          # allenai/openbookqa
-  #"reclor"              # metaeval/reclor
-  #"drop"                # ucinlp/drop
-  #"strategyqa"          # ChilleD/StrategyQA
-  #"folio"
-  "aime24"
-  # "aime25"
-  #  "logiqa"
+# =====================
+# Sweep settings
+# =====================
+PRESS_NAME="full"
+
+MODELS=(
+  "deepseek-ai/DeepSeek-R1-Distill-Llama-8B"
+  "deepseek-ai/DeepSeek-R1-Distill-Qwen-14B"
 )
 
-# Cache budgets to sweep over
-CACHE_BUDGETS=(1024)
-LAMBS=(0.01)
+DATASETS=(
+  "aime24"
+  "math500"
+)
 
-# ====== Execution ======
-echo "Starting $PRESS_NAME evaluations"
-echo "Model: $MODEL_NAME | Samples: $NUM_SAMPLES | Seed: $RANDOM_SEED | Max new tokens: $MAX_NEW_TOKENS"
-echo "Lambda values to test: ${LAMBS[*]}"
+CACHE_BUDGETS=(128 256 512 1024)
+LAMBDA=0.01
+N_HASH_BUCKETS=8
 
-for budget in "${CACHE_BUDGETS[@]}"; do
-  echo "\n🔄 Evaluating $PRESS_NAME with cache_budget=$budget..."
-  for lambda in "${LAMBS[@]}"; do
-    echo "\n  📊 Testing lambda=$lambda..."
-    for dataset in "${datasets[@]}"; do
-      # Construct expected results filename (include lambda in filename)
-      # Format lambda to match evaluate.py exactly: multiply by 100, round, then format
-      # e.g., 0 -> "0", 0.01 -> "001", 0.05 -> "005", 0.1 -> "01", 1.0 -> "1"
-      # Use awk to round (matching Python's round() behavior)
-      lambda_int=$(awk "BEGIN {printf \"%.0f\", $lambda * 100}")
-      
-      if [ "$lambda_int" -eq 0 ]; then
-        lambda_sanitized="0"
-      elif [ "$lambda_int" -lt 10 ]; then
-        # 1-9: format as 3 digits with leading zeros (001, 002, ..., 009)
-        lambda_sanitized=$(printf "%03d" "$lambda_int")
-      elif [ "$lambda_int" -lt 100 ]; then
-        # 10-99: format as 2 digits with leading zero (01, 02, ..., 09, 10, ..., 99)
-        lambda_sanitized=$(printf "%02d" "$lambda_int")
-      else
-        # 100+: if divisible by 100, divide by 100, else keep as string
-        if [ $((lambda_int % 100)) -eq 0 ]; then
-          lambda_sanitized=$((lambda_int / 100))
-        else
-          lambda_sanitized="$lambda_int"
-        fi
-      fi
-      
-      # Construct filename matching evaluate.py format exactly
-      out_file="${RESULT_DIR}/${dataset}____${MODEL_FILE}__${PRESS_NAME}__budget${budget}__hash_bucket8__max_new_tokens${MAX_NEW_TOKENS}__lam${lambda_sanitized}__num_samples${NUM_SAMPLES}__sampling.jsonl"
-      
-      # Check for score file first (evaluate.py checks score_filename for skip_existing)
-      # This is the primary check - if score file exists, evaluation is complete
-      score_file="${RESULT_DIR}/${dataset}____${MODEL_FILE}__${PRESS_NAME}__budget${budget}__hash_bucket8__max_new_tokens${MAX_NEW_TOKENS}__lam${lambda_sanitized}__num_samples${NUM_SAMPLES}__sampling_score.json"
-      
-      if [[ -f "$score_file" ]]; then
-        echo "    ✅ Skipping $dataset at budget $budget, lambda $lambda (score file exists: $(basename "$score_file"))"
-        continue
-      fi
-      
-      # Also check for results file as secondary check
-      if [[ -f "$out_file" ]]; then
-        echo "    ⚠️  Results file exists but no score file: $(basename "$out_file") - will rerun to generate score file"
-        # Continue anyway to regenerate score file
-      fi
+NUM_SAMPLES=10
+RANDOM_SEED=42
 
-      echo "    ➡️  Running $dataset @ budget $budget, lambda $lambda"
-      CUDA_LAUNCH_BLOCKING=1 python "$SCRIPT_PATH" \
-        --dataset="$dataset" \
-        --model_name="$MODEL_NAME" \
-        --press_name="$PRESS_NAME" \
-        --cache_budget="$budget" \
-        --num_samples="$NUM_SAMPLES" \
-        --random_seed="$RANDOM_SEED" \
-        --max_new_tokens="$MAX_NEW_TOKENS" \
-        --n_hash_buckets=8 \
-        --lam="$lambda" \
-        --track_tokens=false
-    done
-  done
-done
+# Max tokens strategy
+# MAX_TOKENS_MODE options:
+#   force2048  -> force 2048 for both math500 and aime24
+#   separate   -> use dataset-specific values (math500=16384, aime24=32768)
+MAX_TOKENS_MODE=${MAX_TOKENS_MODE:-separate}
 
-echo "\n✅ All $PRESS_NAME evaluations complete."
+# =====================
+# Derived sizes
+# =====================
+NUM_MODELS=${#MODELS[@]}
+NUM_DATASETS=${#DATASETS[@]}
+NUM_BUDGETS=${#CACHE_BUDGETS[@]}
+TOTAL=$((NUM_MODELS * NUM_DATASETS * NUM_BUDGETS))
+
+TASK_ID=${SLURM_ARRAY_TASK_ID:-0}
+if [[ $TASK_ID -ge $TOTAL ]]; then
+  echo "TASK_ID $TASK_ID exceeds total jobs $TOTAL"
+  exit 1
+fi
+
+# =====================
+# Map array index → (model, dataset, budget)
+# =====================
+combo=$TASK_ID
+model_idx=$(( combo / (NUM_DATASETS * NUM_BUDGETS) ))
+rem=$(( combo % (NUM_DATASETS * NUM_BUDGETS) ))
+dataset_idx=$(( rem / NUM_BUDGETS ))
+budget_idx=$(( rem % NUM_BUDGETS ))
+
+MODEL_NAME=${MODELS[$model_idx]}
+DATASET=${DATASETS[$dataset_idx]}
+CACHE_BUDGET=${CACHE_BUDGETS[$budget_idx]}
+MODEL_FILE=${MODEL_NAME//\//--}
+
+# Resolve max tokens per mode/dataset
+resolve_max_tokens() {
+  local dataset="$1"
+  case "$MAX_TOKENS_MODE" in
+    force2048)
+      echo 2048
+      ;;
+    separate)
+      case "$dataset" in
+        math500) echo "16384" ;;
+        aime24)  echo "32768" ;;
+        *)       echo "2048"  ;;
+      esac
+      ;;
+    *)
+      case "$dataset" in
+        aime24)
+          echo "32768"
+          ;;
+        math500)
+          echo "16384"
+          ;;
+        *)
+          echo "2048"
+          ;;
+      esac
+      ;;
+  esac
+}
+
+MAX_NEW_TOKENS=$(resolve_max_tokens "$DATASET")
+
+# =====================
+# Lambda formatting
+# =====================
+lambda_int=$(awk "BEGIN {printf \"%.0f\", $LAMBDA * 100}")
+if [ "$lambda_int" -eq 0 ]; then
+  lambda_sanitized="0"
+elif [ "$lambda_int" -lt 10 ]; then
+  lambda_sanitized=$(printf "%03d" "$lambda_int")
+elif [ "$lambda_int" -lt 100 ]; then
+  lambda_sanitized=$(printf "%02d" "$lambda_int")
+else
+  if [ $((lambda_int % 100)) -eq 0 ]; then
+    lambda_sanitized=$((lambda_int / 100))
+  else
+    lambda_sanitized="$lambda_int"
+  fi
+fi
+
+# =====================
+# Output files
+# =====================
+out_file="${RESULT_DIR}/${DATASET}____${MODEL_FILE}__${PRESS_NAME}__budget${CACHE_BUDGET}__hash_bucket${N_HASH_BUCKETS}__max_new_tokens${MAX_NEW_TOKENS}__lam${lambda_sanitized}__num_samples${NUM_SAMPLES}__sampling.jsonl"
+score_file="${RESULT_DIR}/${DATASET}____${MODEL_FILE}__${PRESS_NAME}__budget${CACHE_BUDGET}__hash_bucket${N_HASH_BUCKETS}__max_new_tokens${MAX_NEW_TOKENS}__lam${lambda_sanitized}__num_samples${NUM_SAMPLES}__sampling_score.json"
+
+# =====================
+# Skip logic
+# =====================
+if [[ -f "$score_file" ]]; then
+  echo "Skipping $DATASET @ budget $CACHE_BUDGET (score exists)"
+  exit 0
+fi
+
+if [[ -f "$out_file" ]]; then
+  echo "Results exist without score — rerunning to generate score"
+fi
+
+# =====================
+# Run
+# =====================
+echo "Running dataset=$DATASET | model=$MODEL_NAME | budget=$CACHE_BUDGET | max_new_tokens=$MAX_NEW_TOKENS | lambda=$LAMBDA"
+
+python "$SCRIPT_PATH" \
+  --dataset="$DATASET" \
+  --model_name="$MODEL_NAME" \
+  --press_name="$PRESS_NAME" \
+  --cache_budget="$CACHE_BUDGET" \
+  --num_samples="$NUM_SAMPLES" \
+  --random_seed="$RANDOM_SEED" \
+  --max_new_tokens="$MAX_NEW_TOKENS" \
+  --n_hash_buckets="$N_HASH_BUCKETS" \
+  --lam="$LAMBDA" \
+  --track_tokens=false \
+  --measure_memory=false \
+  --measure_latency=true
+
+echo "Done $DATASET | budget=$CACHE_BUDGET | lambda=$LAMBDA"
