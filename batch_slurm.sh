@@ -5,7 +5,7 @@
 #SBATCH --gres=gpu:a100:1
 #SBATCH --cpus-per-task=8
 #SBATCH --ntasks=1
-#SBATCH --array=0  # 5 models * 4 datasets * 4 budgets = 80 combos
+#SBATCH --array=0-15
 #SBATCH --output=logs/%x_%A_%a.out
 #SBATCH --error=logs/%x_%A_%a.err
 
@@ -29,26 +29,22 @@ mkdir -p logs "$RESULT_DIR"
 PRESS_NAME="rkvlsh"
 MODELS=(
   "deepseek-ai/DeepSeek-R1-Distill-Llama-8B"
-  "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
   "deepseek-ai/DeepSeek-R1-Distill-Qwen-14B"
-  "nvidia/Llama-3.1-Nemotron-Nano-8B-v1"
-  "meta-llama/Meta-Llama-3-8B"
 )
 DATASETS=(
-  "gsm8k"
   "aime24"
-  "aime25"
   "math500"
 )
-CACHE_BUDGETS=(128 256 384 512)
-LAMBDA=0.01
+CACHE_BUDGETS=(128 256 512 1024)
+LAMBDA=0.1
 N_HASH_BUCKETS=8
 
-NUM_SAMPLES=30
+NUM_SAMPLES=0
 RANDOM_SEED=42
-MAX_NEW_TOKENS=2048
 
+# =====================
 # Derived sizes
+# =====================
 NUM_MODELS=${#MODELS[@]}
 NUM_DATASETS=${#DATASETS[@]}
 NUM_BUDGETS=${#CACHE_BUDGETS[@]}
@@ -71,6 +67,24 @@ MODEL_NAME=${MODELS[$model_idx]}
 DATASET=${DATASETS[$dataset_idx]}
 CACHE_BUDGET=${CACHE_BUDGETS[$budget_idx]}
 MODEL_FILE=${MODEL_NAME//\//--}
+
+# =====================
+# Dataset-specific max tokens and num samples
+# =====================
+case "$DATASET" in
+  aime24)
+    MAX_NEW_TOKENS=32768
+    NUM_SAMPLES=0
+    ;;
+  math500)
+    MAX_NEW_TOKENS=16384
+    NUM_SAMPLES=100
+    ;;
+  *)
+    echo "Unknown dataset: $DATASET"
+    exit 1
+    ;;
+esac
 
 # Format lambda exactly like evaluate.py filenames
 lambda_int=$(awk "BEGIN {printf \"%.0f\", $LAMBDA * 100}")
