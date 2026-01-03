@@ -39,8 +39,13 @@ DATASETS = [
 CACHE_BUDGETS = [128, 256, 512, 1024]
 LAMBDA = 0.01
 N_HASH_BUCKETS = 8
-NUM_SAMPLES = 10
 RANDOM_SEED = 42
+
+# Dataset-specific NUM_SAMPLES
+NUM_SAMPLES_MAP = {
+    "aime24": 0,
+    "math500": 100,
+}
 
 
 def resolve_max_tokens(dataset: str) -> int:
@@ -94,6 +99,7 @@ def run_experiment(
     """
     model_file = model_name.replace("/", "--")
     max_new_tokens = resolve_max_tokens(dataset)
+    num_samples = NUM_SAMPLES_MAP.get(dataset, 10)
     lambda_sanitized = format_lambda(LAMBDA)
 
     # Generate output filenames
@@ -104,7 +110,7 @@ def run_experiment(
         f"hash_bucket{N_HASH_BUCKETS}__"
         f"max_new_tokens{max_new_tokens}__"
         f"lam{lambda_sanitized}__"
-        f"num_samples{NUM_SAMPLES}__sampling.jsonl"
+        f"num_samples{num_samples}__sampling.jsonl"
     )
     
     score_file = (
@@ -114,7 +120,7 @@ def run_experiment(
         f"hash_bucket{N_HASH_BUCKETS}__"
         f"max_new_tokens{max_new_tokens}__"
         f"lam{lambda_sanitized}__"
-        f"num_samples{NUM_SAMPLES}__sampling_score.json"
+        f"num_samples{num_samples}__sampling_score.json"
     )
 
     # Check if already completed
@@ -135,7 +141,7 @@ def run_experiment(
         f"--model_name={model_name}",
         f"--press_name={press_name}",
         f"--cache_budget={cache_budget}",
-        f"--num_samples={NUM_SAMPLES}",
+        f"--num_samples={num_samples}",
         f"--random_seed={RANDOM_SEED}",
         f"--max_new_tokens={max_new_tokens}",
         f"--n_hash_buckets={N_HASH_BUCKETS}",
