@@ -798,7 +798,7 @@ def evaluate(
     return
 
 if __name__ == "__main__":
-    cache_dir = "/fs/nexus-scratch/minghui/.cache/huggingface"
+    cache_dir = "/home/dixi/cache/"
     if not os.environ.get("HF_HOME"):
         os.environ["HF_HOME"] = cache_dir
     Fire(evaluate)
