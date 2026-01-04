@@ -31,7 +31,7 @@ mkdir -p logs "$RESULT_DIR"
 # =====================
 # Sweep settings
 # =====================
-PRESS_NAME="full"
+PRESS_NAME="rkvlsh"
 
 MODELS=(
   "deepseek-ai/DeepSeek-R1-Distill-Llama-8B"
@@ -44,7 +44,7 @@ DATASETS=(
 )
 
 CACHE_BUDGETS=(128 256 512 1024)
-LAMBDA=0.01
+LAMBDA=0
 N_HASH_BUCKETS=8
 
 NUM_SAMPLES=10

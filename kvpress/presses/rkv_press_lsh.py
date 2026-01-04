@@ -146,120 +146,142 @@ class RKVLSHPress(ScorerPress):
         num_key_value_groups = module.config.num_attention_heads // num_key_value_heads
 
         assert q_len > self.window_size, "Query length should be greater than the window size"
-        if attentions is not None:
-            attn_weights = attentions[..., -self.window_size :, : -self.window_size]
+        
+        # If lam == 0, skip attention computation and only compute redundancy
+        if self.lam == 0:
+            # Skip attention computation entirely when lam=0 (only redundancy matters)
+            scores = None
         else:
-            attn_weights = self.compute_window_attention(
-                module, hidden_states, keys, self.window_size, kwargs["position_embeddings"]
-            )
-        scores = attn_weights.mean(dim=-2)   
-        # Average per group (https://github.com/FasterDecoding/SnapKV/issues/22)
-        scores = scores.view(bsz, num_key_value_heads, num_key_value_groups, q_len - self.window_size)
-        scores = scores.max(dim=-2).values
-        # Stablization and Importance Estimation
-        scores = F.max_pool1d(scores, kernel_size=self.kernel_size, padding=self.kernel_size // 2, stride=1)
+            # Compute attention weights
+            if attentions is not None:
+                attn_weights = attentions[..., -self.window_size :, : -self.window_size]
+            else:
+                attn_weights = self.compute_window_attention(
+                    module, hidden_states, keys, self.window_size, kwargs["position_embeddings"]
+                )
+            scores = attn_weights.mean(dim=-2)   
+            # Average per group (https://github.com/FasterDecoding/SnapKV/issues/22)
+            scores = scores.view(bsz, num_key_value_heads, num_key_value_groups, q_len - self.window_size)
+            scores = scores.max(dim=-2).values
+            # Stablization and Importance Estimation
+            scores = F.max_pool1d(scores, kernel_size=self.kernel_size, padding=self.kernel_size // 2, stride=1)
+        
         # Redundancy Estimation via Semantic Similarity
-        
-        # normalize keys by dividing the l2 norm of keys + eps (1e-8) 
-        eps = 1e-8
-        keys_norm = keys.norm(dim=-1, keepdim=True) + eps
-        keys = keys / keys_norm
+        # If lam == 1, skip redundancy computation (only attention matters)
+        if self.lam == 1:
+            # Skip redundancy computation entirely when lam=1
+            redundancy = None
+        else:
+            # normalize keys by dividing the l2 norm of keys + eps (1e-8) 
+            eps = 1e-8
+            keys_norm = keys.norm(dim=-1, keepdim=True) + eps
+            keys = keys / keys_norm
 
-        ### Original Algorithm: directly using the cosine similarity
-        # # compute the cosine similarity between keys
-        # keys_flat = keys.view(bsz, num_key_value_heads, -1, keys.shape[-1])
-        # keys_flat = keys_flat[:, :, : -self.window_size, :]  # Exclude the last window_size keys
-        # keys_similarity = torch.einsum("bhqd,bhkd->bhqk", keys_flat, keys_flat)
-        # # zero out the diagonal (self-similarity)
-        # mask = torch.eye(keys_similarity.shape[-1], device=keys_similarity.device).unsqueeze(0).unsqueeze(0)
-        # keys_similarity = keys_similarity * (1 - mask)
+            ### Original Algorithm: directly using the cosine similarity
+            # # compute the cosine similarity between keys
+            # keys_flat = keys.view(bsz, num_key_value_heads, -1, keys.shape[-1])
+            # keys_flat = keys_flat[:, :, : -self.window_size, :]  # Exclude the last window_size keys
+            # keys_similarity = torch.einsum("bhqd,bhkd->bhqk", keys_flat, keys_flat)
+            # # zero out the diagonal (self-similarity)
+            # mask = torch.eye(keys_similarity.shape[-1], device=keys_similarity.device).unsqueeze(0).unsqueeze(0)
+            # keys_similarity = keys_similarity * (1 - mask)
 
-        # redundency = keys_similarity.mean(dim=-1)  # Average over the key dimension
-        # redundency = F.softmax(redundency, dim=-1, dtype=torch.float32).to(scores.dtype)
- 
-        ### Modified Algorithm: implement LSH over that
-        keys_flat = keys.view(bsz, num_key_value_heads, -1, keys.shape[-1])
-        keys_flat = keys_flat[:, :, : -self.window_size, :]  # Exclude the last window_size keys
+            # redundency = keys_similarity.mean(dim=-1)  # Average over the key dimension
+            # redundency = F.softmax(redundency, dim=-1, dtype=torch.float32).to(scores.dtype)
+     
+            ### Modified Algorithm: implement LSH over that
+            keys_flat = keys.view(bsz, num_key_value_heads, -1, keys.shape[-1])
+            keys_flat = keys_flat[:, :, : -self.window_size, :]  # Exclude the last window_size keys
 
-        # Construct LSH buckets with cached projection matrix
-        head_dim = keys_flat.shape[-1]
-        device = keys.device
-        dtype = keys_flat.dtype
-        
-        # Cache projection matrix to avoid recreating it every time
-        # Only recreate if head_dim changed (e.g., different model) or device/dtype mismatch
-        if (self.proj_matrix is None or 
-            self.proj_matrix_head_dim != head_dim or 
-            str(self.proj_matrix.device) != str(device) or
-            self.proj_matrix.dtype != dtype):
-            self.proj_matrix = torch.randn(
-                head_dim, self.n_hash_buckets, 
-                device=device, dtype=dtype
-            )
-            self.proj_matrix_head_dim = head_dim
-        
-        q_len_flat, head_dim = keys_flat.shape[2], keys_flat.shape[3]
-        keys_reshaped = keys_flat.reshape(-1, head_dim)  # [B*H*Q, D]
-        hash_bits_flat = torch.matmul(keys_reshaped, self.proj_matrix)  # [B*H*Q, K] - faster than einsum
-        hash_bits = hash_bits_flat.reshape(bsz, num_key_value_heads, q_len_flat, self.n_hash_buckets)  # [B, H, Q, K]
-        # Convert to binary codes and compute integer hash codes in one step
-        hash_codes = (hash_bits > 0).int()  # [B, H, Q, K]
-        # Cache powers_of_two device transfer - only move if device changed
-        device_str = str(hash_codes.device)
-        if (self.powers_of_two_cached is None or 
-            self.powers_of_two_device != device_str):
-            self.powers_of_two_cached = self.powers_of_two.to(hash_codes.device)
-            self.powers_of_two_device = device_str
-        powers_of_two = self.powers_of_two_cached
-        # Compute hash codes as integers: sum of binary bits weighted by powers of 2
-        hash_codes_int = torch.sum(hash_codes * powers_of_two, dim=-1)  # [B, H, Q]
+            # Construct LSH buckets with cached projection matrix
+            head_dim = keys_flat.shape[-1]
+            device = keys.device
+            dtype = keys_flat.dtype
+            
+            # Cache projection matrix to avoid recreating it every time
+            # Only recreate if head_dim changed (e.g., different model) or device/dtype mismatch
+            if (self.proj_matrix is None or 
+                self.proj_matrix_head_dim != head_dim or 
+                str(self.proj_matrix.device) != str(device) or
+                self.proj_matrix.dtype != dtype):
+                self.proj_matrix = torch.randn(
+                    head_dim, self.n_hash_buckets, 
+                    device=device, dtype=dtype
+                )
+                self.proj_matrix_head_dim = head_dim
+            
+            q_len_flat, head_dim = keys_flat.shape[2], keys_flat.shape[3]
+            keys_reshaped = keys_flat.reshape(-1, head_dim)  # [B*H*Q, D]
+            hash_bits_flat = torch.matmul(keys_reshaped, self.proj_matrix)  # [B*H*Q, K] - faster than einsum
+            hash_bits = hash_bits_flat.reshape(bsz, num_key_value_heads, q_len_flat, self.n_hash_buckets)  # [B, H, Q, K]
+            # Convert to binary codes and compute integer hash codes in one step
+            hash_codes = (hash_bits > 0).int()  # [B, H, Q, K]
+            # Cache powers_of_two device transfer - only move if device changed
+            device_str = str(hash_codes.device)
+            if (self.powers_of_two_cached is None or 
+                self.powers_of_two_device != device_str):
+                self.powers_of_two_cached = self.powers_of_two.to(hash_codes.device)
+                self.powers_of_two_device = device_str
+            powers_of_two = self.powers_of_two_cached
+            # Compute hash codes as integers: sum of binary bits weighted by powers of 2
+            hash_codes_int = torch.sum(hash_codes * powers_of_two, dim=-1)  # [B, H, Q]
 
-        # Cache cos_bucket device transfer - only move if device or dtype changed
-        device_str = str(keys.device)
-        dtype = keys.dtype  # Use the same dtype as keys (typically bfloat16)
-        if (self.cos_bucket_cached is None or 
-            self.cos_bucket_device != device_str or
-            self.cos_bucket_dtype != dtype):
-            self.cos_bucket_cached = self.cos_hamming_distance_bucket.to(keys.device).to(dtype)
-            self.cos_bucket_device = device_str
-            self.cos_bucket_dtype = dtype
-        cos_bucket = self.cos_bucket_cached  # [2**n_hash_buckets, 2**n_hash_buckets]
-        
-        # Fully vectorized computation on GPU - no CPU transfers, no Python loops
-        # Shape: hash_codes_int is [B, H, Q]
-        bsz, num_heads, q_len = hash_codes_int.shape
-        
-        # Flatten for batch processing: [B*H, Q]
-        codes_flat = hash_codes_int.view(-1, q_len).long()  # [B*H, Q]
-        
-        # Vectorized bucket counting using scatter_add (fully GPU-accelerated)
-        # Count tokens in each bucket for each batch-head: [B*H, num_buckets]
-        counts = torch.zeros(bsz * num_heads, self.num_buckets, device=codes_flat.device, dtype=torch.bfloat16)
-        counts.scatter_add_(1, codes_flat, torch.ones_like(codes_flat, dtype=torch.bfloat16))
-        
-        # Compute total counts per batch-head: [B*H, 1]
-        total_counts = counts.sum(dim=1, keepdim=True)  # [B*H, 1]
-        
-        # According to paper: S_i' = (Σ_{i≠j} c_j cos(Hamming(i,j)/b)) / (Σ_j c_j)
-        # Optimized: compute (counts @ cos_bucket - counts) / total_counts in one step
-        # This excludes self-similarity (diagonal terms where cos(0) = 1.0)
-        # Combined operation to reduce memory traffic
-        avg_cosine = (counts @ cos_bucket - counts) / (total_counts + 1e-8)  # [B*H, num_buckets]
-        
-        # Map each token's bucket code to its average cosine value
-        # Use gather for efficient indexing
-        redundancy_flat = avg_cosine.gather(1, codes_flat)  # [B*H, Q]
-        
-        # Reshape back to [B, H, Q]
-        redundancy = redundancy_flat.view(bsz, num_heads, q_len)
-        redundancy = F.softmax(redundancy, dim=-1, dtype=torch.bfloat16).to(scores.dtype)
+            # Cache cos_bucket device transfer - only move if device or dtype changed
+            device_str = str(keys.device)
+            dtype = keys.dtype  # Use the same dtype as keys (typically bfloat16)
+            if (self.cos_bucket_cached is None or 
+                self.cos_bucket_device != device_str or
+                self.cos_bucket_dtype != dtype):
+                self.cos_bucket_cached = self.cos_hamming_distance_bucket.to(keys.device).to(dtype)
+                self.cos_bucket_device = device_str
+                self.cos_bucket_dtype = dtype
+            cos_bucket = self.cos_bucket_cached  # [2**n_hash_buckets, 2**n_hash_buckets]
+            
+            # Fully vectorized computation on GPU - no CPU transfers, no Python loops
+            # Shape: hash_codes_int is [B, H, Q]
+            bsz, num_heads, q_len = hash_codes_int.shape
+            
+            # Flatten for batch processing: [B*H, Q]
+            codes_flat = hash_codes_int.view(-1, q_len).long()  # [B*H, Q]
+            
+            # Vectorized bucket counting using scatter_add (fully GPU-accelerated)
+            # Count tokens in each bucket for each batch-head: [B*H, num_buckets]
+            counts = torch.zeros(bsz * num_heads, self.num_buckets, device=codes_flat.device, dtype=torch.bfloat16)
+            counts.scatter_add_(1, codes_flat, torch.ones_like(codes_flat, dtype=torch.bfloat16))
+            
+            # Compute total counts per batch-head: [B*H, 1]
+            total_counts = counts.sum(dim=1, keepdim=True)  # [B*H, 1]
+            
+            # According to paper: S_i' = (Σ_{i≠j} c_j cos(Hamming(i,j)/b)) / (Σ_j c_j)
+            # Optimized: compute (counts @ cos_bucket - counts) / total_counts in one step
+            # This excludes self-similarity (diagonal terms where cos(0) = 1.0)
+            # Combined operation to reduce memory traffic
+            avg_cosine = (counts @ cos_bucket - counts) / (total_counts + 1e-8)  # [B*H, num_buckets]
+            
+            # Map each token's bucket code to its average cosine value
+            # Use gather for efficient indexing
+            redundancy_flat = avg_cosine.gather(1, codes_flat)  # [B*H, Q]
+            
+            # Reshape back to [B, H, Q]
+            redundancy = redundancy_flat.view(bsz, num_heads, q_len)
+            redundancy = F.softmax(redundancy, dim=-1, dtype=torch.bfloat16).to(keys.dtype)
 
-        scores = self.lam * scores + (1 - self.lam) * redundancy
+        # Combine scores based on lambda
+        if self.lam == 0:
+            # Only redundancy (skip attention entirely)
+            final_scores = redundancy
+        elif self.lam == 1:
+            # Only attention scores (skip redundancy entirely)
+            final_scores = scores
+        else:
+            # Combination of both
+            final_scores = self.lam * scores + (1 - self.lam) * redundancy
+        
         # Add back the observation window. Use max score to make sure the window is not pruned.
         # Keep max computation on GPU, only convert to Python scalar for padding value (required by F.pad)
-        max_score = scores.max()
-        scores = F.pad(scores, (0, self.window_size), value=float(max_score))
-        return scores
+        max_score = final_scores.max()
+        final_scores = F.pad(final_scores, (0, self.window_size), value=float(max_score))
+        return final_scores
     
 
     def _get_hidden_size(self, module, device="cuda"):
