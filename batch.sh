@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=full
+#SBATCH --job-name=rkslshlam0
 #SBATCH --partition=litian,general
 #SBATCH --mem=32GB
 #SBATCH --gres=gpu:a100:1
@@ -50,11 +50,8 @@ N_HASH_BUCKETS=8
 NUM_SAMPLES=10
 RANDOM_SEED=42
 
-# Max tokens strategy
-# MAX_TOKENS_MODE options:
-#   force2048  -> force 2048 for both math500 and aime24
-#   separate   -> use dataset-specific values (math500=16384, aime24=32768)
-MAX_TOKENS_MODE=${MAX_TOKENS_MODE:-separate}
+# Max tokens modes to traverse
+MAX_TOKENS_MODES=("separate" "force2048")
 
 # =====================
 # Derived sizes
@@ -62,7 +59,9 @@ MAX_TOKENS_MODE=${MAX_TOKENS_MODE:-separate}
 NUM_MODELS=${#MODELS[@]}
 NUM_DATASETS=${#DATASETS[@]}
 NUM_BUDGETS=${#CACHE_BUDGETS[@]}
-TOTAL=$((NUM_MODELS * NUM_DATASETS * NUM_BUDGETS))
+NUM_MODES=${#MAX_TOKENS_MODES[@]}
+JOBS_PER_MODE=$((NUM_MODELS * NUM_DATASETS * NUM_BUDGETS))
+TOTAL=$((NUM_MODES * JOBS_PER_MODE))
 
 TASK_ID=${SLURM_ARRAY_TASK_ID:-0}
 if [[ $TASK_ID -ge $TOTAL ]]; then
@@ -71,9 +70,12 @@ if [[ $TASK_ID -ge $TOTAL ]]; then
 fi
 
 # =====================
-# Map array index → (model, dataset, budget)
+# Map array index → (mode, model, dataset, budget)
 # =====================
-combo=$TASK_ID
+mode_idx=$(( TASK_ID / JOBS_PER_MODE ))
+combo=$(( TASK_ID % JOBS_PER_MODE ))
+MAX_TOKENS_MODE=${MAX_TOKENS_MODES[$mode_idx]}
+
 model_idx=$(( combo / (NUM_DATASETS * NUM_BUDGETS) ))
 rem=$(( combo % (NUM_DATASETS * NUM_BUDGETS) ))
 dataset_idx=$(( rem / NUM_BUDGETS ))
@@ -155,7 +157,7 @@ fi
 # =====================
 # Run
 # =====================
-echo "Running dataset=$DATASET | model=$MODEL_NAME | budget=$CACHE_BUDGET | max_new_tokens=$MAX_NEW_TOKENS | lambda=$LAMBDA"
+echo "Running dataset=$DATASET | model=$MODEL_NAME | budget=$CACHE_BUDGET | max_new_tokens=$MAX_NEW_TOKENS | max_tokens_mode=$MAX_TOKENS_MODE | lambda=$LAMBDA"
 
 python "$SCRIPT_PATH" \
   --dataset="$DATASET" \
