@@ -76,7 +76,7 @@ case "$DATASET" in
     ;;
   math500)
     MAX_NEW_TOKENS=16384
-    NUM_SAMPLES=100
+    NUM_SAMPLES=50
     ;;
   *)
     echo "Unknown dataset: $DATASET"
