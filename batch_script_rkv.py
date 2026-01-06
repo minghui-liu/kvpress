@@ -35,7 +35,7 @@ MODELS = [
 ]
 
 DATASETS = [
-    "aime24",
+    # "aime24",
     "math500",
 ]
 
