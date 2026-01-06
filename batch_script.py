@@ -44,12 +44,12 @@ N_HASH_BUCKETS = 8
 RANDOM_SEED = 42
 
 # Max tokens modes to traverse (match batch.sh)
-MAX_TOKENS_MODES = ["separate", "force2048"]
+MAX_TOKENS_MODES = ["separate"]
 
 # Dataset-specific NUM_SAMPLES
 NUM_SAMPLES_MAP = {
-    "aime24": 10,  # Match batch.sh
-    "math500": 10,
+    "aime24": 0,  # Match batch.sh
+    "math500": 50,
 }
 
 
