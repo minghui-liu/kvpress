@@ -2,13 +2,15 @@
 """
 Batch experiment runner for local machines (no SLURM).
 Runs experiments sequentially and allows selecting a range.
+Supports both max token modes: "separate" and "force2048"
 
 Usage:
-    python batch_script.py                    # Run all experiments
-    python batch_script.py --range 0-10       # Run experiments 0-10
-    python batch_script.py --range 5-20       # Run experiments 5-20
-    python batch_script.py --method rkv       # Run only rkvlsh method
-    python batch_script.py --range 0-5 --method full
+    python batch_script.py                                # Run all experiments (all modes)
+    python batch_script.py --range 0-10                   # Run experiments 0-10
+    python batch_script.py --range 5-20                   # Run experiments 5-20
+    python batch_script.py --mode separate                # Run only separate mode
+    python batch_script.py --mode force2048               # Run only force2048 mode
+    python batch_script.py --range 0-7 --mode separate
 """
 
 import argparse
@@ -24,7 +26,7 @@ from typing import List, Tuple
 SCRIPT_PATH = "reason/evaluate.py"
 RESULT_DIR = "reason/results"
 
-PRESS_NAME = "full"  # Can be "full", "rkv", or "rkvlsh"
+PRESS_NAME = "rkvlsh"  # Match batch.sh
 
 MODELS = [
     "deepseek-ai/DeepSeek-R1-Distill-Llama-8B",
@@ -37,23 +39,31 @@ DATASETS = [
 ]
 
 CACHE_BUDGETS = [128, 256, 512, 1024]
-LAMBDA = 0.01
+LAMBDA = 0  # Match batch.sh (was 0.01)
 N_HASH_BUCKETS = 8
 RANDOM_SEED = 42
 
+# Max tokens modes to traverse (match batch.sh)
+MAX_TOKENS_MODES = ["separate", "force2048"]
+
 # Dataset-specific NUM_SAMPLES
 NUM_SAMPLES_MAP = {
-    "aime24": 0,
-    "math500": 100,
+    "aime24": 10,  # Match batch.sh
+    "math500": 10,
 }
 
 
-def resolve_max_tokens(dataset: str) -> int:
-    """Determine max tokens based on dataset."""
-    if dataset == "math500":
-        return 16384
-    elif dataset == "aime24":
-        return 32768
+def resolve_max_tokens(dataset: str, mode: str) -> int:
+    """Determine max tokens based on mode and dataset."""
+    if mode == "force2048":
+        return 2048
+    elif mode == "separate":
+        if dataset == "math500":
+            return 16384
+        elif dataset == "aime24":
+            return 32768
+        else:
+            return 2048
     else:
         return 2048
 
@@ -92,13 +102,14 @@ def run_experiment(
     dataset: str,
     cache_budget: int,
     press_name: str,
+    max_tokens_mode: str,
 ) -> bool:
     """
     Run a single experiment.
     Returns True if successful, False otherwise.
     """
     model_file = model_name.replace("/", "--")
-    max_new_tokens = resolve_max_tokens(dataset)
+    max_new_tokens = resolve_max_tokens(dataset, max_tokens_mode)
     num_samples = NUM_SAMPLES_MAP.get(dataset, 10)
     lambda_sanitized = format_lambda(LAMBDA)
 
@@ -130,7 +141,7 @@ def run_experiment(
 
     print(f"\n{'='*70}")
     print(f"Running: {dataset} | {model_name} | budget {cache_budget}")
-    print(f"Max tokens: {max_new_tokens} | Press: {press_name}")
+    print(f"Max tokens: {max_new_tokens} | Max tokens mode: {max_tokens_mode} | Press: {press_name}")
     print(f"{'='*70}")
 
     # Build command
@@ -166,15 +177,16 @@ def run_experiment(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Run batch experiments sequentially on local machine",
+        description="Run batch experiments sequentially on local machine with max tokens modes",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python batch_script.py                  # Run all experiments
-  python batch_script.py --range 0-10     # Run experiments 0-10
-  python batch_script.py --range 5-15     # Run experiments 5-15
-  python batch_script.py --method rkv     # Run only rkvlsh method
-  python batch_script.py --range 0-5 --method full
+  python batch_script.py                              # Run all experiments (all modes)
+  python batch_script.py --range 0-10                 # Run experiments 0-10
+  python batch_script.py --range 5-15                 # Run experiments 5-15
+  python batch_script.py --mode separate              # Run only separate mode
+  python batch_script.py --mode force2048             # Run only force2048 mode
+  python batch_script.py --range 0-7 --mode separate  # Run 0-7 in separate mode
         """,
     )
     
@@ -186,11 +198,11 @@ Examples:
     )
     
     parser.add_argument(
-        "--method",
+        "--mode",
         type=str,
-        default="full",
-        choices=["full", "rkv", "rkvlsh"],
-        help="Press method to use (default: full)",
+        default=None,
+        choices=MAX_TOKENS_MODES,
+        help=f"Max tokens mode to use: {', '.join(MAX_TOKENS_MODES)} (default: all modes)",
     )
 
     args = parser.parse_args()
@@ -198,10 +210,19 @@ Examples:
     # Setup environment
     os.makedirs(RESULT_DIR, exist_ok=True)
 
-    # Get all experiments
+    # Determine which modes to run
+    if args.mode:
+        modes_to_run = [args.mode]
+    else:
+        modes_to_run = MAX_TOKENS_MODES
+    
+    # Get all experiments (per mode)
     all_experiments = get_experiment_list()
-    total = len(all_experiments)
-    print(f"Total possible experiments: {total}")
+    experiments_per_mode = len(all_experiments)
+    total_experiments = experiments_per_mode * len(modes_to_run)
+    
+    print(f"Modes to run: {modes_to_run}")
+    print(f"Total possible experiments: {total_experiments} ({len(modes_to_run)} modes × {experiments_per_mode} experiments)")
     print(f"Models: {len(MODELS)}, Datasets: {len(DATASETS)}, Budgets: {len(CACHE_BUDGETS)}")
 
     # Determine range
@@ -210,30 +231,38 @@ Examples:
             start, end = args.range.split("-")
             start = int(start)
             end = int(end)
-            if start < 0 or end >= total or start > end:
-                print(f"Error: Invalid range {start}-{end}. Valid range is 0-{total-1}")
+            if start < 0 or end >= total_experiments or start > end:
+                print(f"Error: Invalid range {start}-{end}. Valid range is 0-{total_experiments-1}")
                 sys.exit(1)
-            experiments = all_experiments[start : end + 1]
-            print(f"\nRunning experiments {start}-{end} ({len(experiments)} total)")
+            range_list = list(range(start, end + 1))
+            print(f"\nRunning experiments {start}-{end} ({len(range_list)} total)")
         except (ValueError, IndexError):
             print(f"Error: Invalid range format. Use 'start-end' (e.g., '0-10')")
             sys.exit(1)
     else:
-        experiments = all_experiments
-        print(f"\nRunning all {len(experiments)} experiments")
+        range_list = list(range(total_experiments))
+        print(f"\nRunning all {total_experiments} experiments")
 
     # Run experiments
-    press_name = args.method
     successful = 0
     failed = 0
-    skipped = 0
 
     try:
-        for i, (model, dataset, budget) in enumerate(experiments, 1):
-            experiment_num = all_experiments.index((model, dataset, budget))
-            print(f"\n[{i}/{len(experiments)}] Experiment #{experiment_num}")
+        for idx, task_id in enumerate(range_list, 1):
+            # Map task_id to (mode, model, dataset, budget)
+            mode_idx = task_id // experiments_per_mode
+            combo = task_id % experiments_per_mode
             
-            result = run_experiment(model, dataset, budget, press_name)
+            # Check if this mode is in modes_to_run
+            if mode_idx >= len(modes_to_run):
+                continue
+            
+            max_tokens_mode = modes_to_run[mode_idx]
+            model, dataset, budget = all_experiments[combo]
+            
+            print(f"\n[{idx}/{len(range_list)}] Task #{task_id} (Mode: {max_tokens_mode})")
+            
+            result = run_experiment(model, dataset, budget, PRESS_NAME, max_tokens_mode)
             if result:
                 successful += 1
             else:
