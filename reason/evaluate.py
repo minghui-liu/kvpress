@@ -150,6 +150,7 @@ def evaluate(
     n_hash_buckets: int = 6,
     lam:float=0.1,
     track_tokens: bool = False,
+    track_buckets: bool = False,
     measure_memory: bool = True,
     measure_latency: bool = True
 ):
@@ -287,6 +288,9 @@ def evaluate(
             press.n_hash_buckets=n_hash_buckets
             press.lam = lam
             press.initialize_buckets(device=device)
+            # Enable bucket tracking if requested
+            if track_buckets:
+                press.enable_bucket_tracking()
 
         # Load model and tokenizer
         if "SeerAttention" in model_name:
@@ -453,6 +457,9 @@ def evaluate(
                         press.cos_bucket_cached = None
                     if hasattr(press, 'powers_of_two_cached'):
                         press.powers_of_two_cached = None
+                    # Reset bucket counts for new sample if tracking
+                    if track_buckets and hasattr(press, 'reset_bucket_counts'):
+                        press.reset_bucket_counts()
                     
                     # Set tokenizer and input tokens ONLY if track_tokens is explicitly True
                     # Explicitly check track_tokens == True to prevent setting when False
@@ -700,6 +707,13 @@ def evaluate(
                 save_obj['keywords'] = {}
                 save_obj['keyword_retention'] = {}
                 save_obj['generation_steps'] = []
+            
+            # Add bucket counts if tracking is enabled
+            if track_buckets and press is not None and hasattr(press, 'get_bucket_counts'):
+                bucket_counts = press.get_bucket_counts()
+                if bucket_counts is not None:
+                    save_obj['bucket_counts'] = bucket_counts.tolist()
+                    save_obj['sample_id'] = i
             
             # Write result incrementally after each example
             with open(str(save_filename), "a", encoding='utf-8') as f:

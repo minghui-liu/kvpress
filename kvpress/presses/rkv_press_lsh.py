@@ -54,8 +54,34 @@ class RKVLSHPress(ScorerPress):
         
         # Tokenizer for decoding tokens (will be set during inference)
         self.tokenizer = None
-        self.input_tokens = None 
+        self.input_tokens = None
+        
+        # Bucket tracking for analysis
+        self.track_buckets = False
+        self.bucket_counts = None  # Will be initialized when tracking is enabled
+        self.bucket_counts_per_sample = []  # Store counts for each sample 
 
+    def enable_bucket_tracking(self):
+        """Enable bucket count tracking for analysis."""
+        self.track_buckets = True
+        if self.num_buckets is not None:
+            self.bucket_counts = np.zeros(self.num_buckets, dtype=np.int64)
+        print(f"[RKV-LSH] Bucket tracking enabled (num_buckets={self.num_buckets})")
+    
+    def reset_bucket_counts(self):
+        """Reset bucket counts for a new sample."""
+        if self.track_buckets and self.num_buckets is not None:
+            self.bucket_counts = np.zeros(self.num_buckets, dtype=np.int64)
+    
+    def get_bucket_counts(self):
+        """Get current bucket counts and store for this sample."""
+        if self.track_buckets and self.bucket_counts is not None:
+            # Store a copy of current counts
+            counts_copy = self.bucket_counts.copy()
+            self.bucket_counts_per_sample.append(counts_copy)
+            return counts_copy
+        return None
+    
     def initialize_buckets(self, device=None):
         """
         Initialize cos_hamming_distance_bucket on the specified device.
@@ -248,6 +274,15 @@ class RKVLSHPress(ScorerPress):
             # Count tokens in each bucket for each batch-head: [B*H, num_buckets]
             counts = torch.zeros(bsz * num_heads, self.num_buckets, device=codes_flat.device, dtype=torch.bfloat16)
             counts.scatter_add_(1, codes_flat, torch.ones_like(codes_flat, dtype=torch.bfloat16))
+            
+            # Track bucket counts if enabled
+            if self.track_buckets:
+                # Aggregate counts across all heads and batch
+                total_counts = counts.sum(dim=0).cpu().numpy().astype(np.int64)
+                if self.bucket_counts is None:
+                    self.bucket_counts = total_counts
+                else:
+                    self.bucket_counts += total_counts
             
             # Compute total counts per batch-head: [B*H, 1]
             total_counts = counts.sum(dim=1, keepdim=True)  # [B*H, 1]
