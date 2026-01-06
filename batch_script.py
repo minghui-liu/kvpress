@@ -49,7 +49,7 @@ MAX_TOKENS_MODES = ["separate"]
 # Dataset-specific NUM_SAMPLES
 NUM_SAMPLES_MAP = {
     "aime24": 0,  # Match batch.sh
-    "math500": 50,
+    "math500": 0,
 }
 
 

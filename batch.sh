@@ -47,11 +47,11 @@ CACHE_BUDGETS=(128 256 512 1024)
 LAMBDA=0
 N_HASH_BUCKETS=8
 
-NUM_SAMPLES=10
+NUM_SAMPLES=0
 RANDOM_SEED=42
 
 # Max tokens modes to traverse
-MAX_TOKENS_MODES=("separate" "force2048")
+MAX_TOKENS_MODES=("separate")
 
 # =====================
 # Derived sizes
