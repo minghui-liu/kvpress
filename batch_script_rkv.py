@@ -24,7 +24,7 @@ SCRIPT_PATH = "reason/evaluate.py"
 RESULT_DIR = "reason/results"
 
 PRESS_NAME = "rkvlsh"
-LAMBDA = 0.1  # Different from batch.sh
+LAMBDA = 0
 N_HASH_BUCKETS = 8
 NUM_SAMPLES = 0
 RANDOM_SEED = 42
