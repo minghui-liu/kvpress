@@ -1,11 +1,11 @@
 #!/bin/bash
-#SBATCH --job-name=rkslsh
+#SBATCH --job-name=rkslshrkvlam0
 #SBATCH --partition=litian
 #SBATCH --mem=32GB
 #SBATCH --gres=gpu:a100:1
 #SBATCH --cpus-per-task=8
 #SBATCH --ntasks=1
-#SBATCH --array=0-15
+#SBATCH --array=0-31
 #SBATCH --output=logs/%x_%A_%a.out
 #SBATCH --error=logs/%x_%A_%a.err
 
@@ -24,20 +24,22 @@ RESULT_DIR="reason/results"
 mkdir -p logs "$RESULT_DIR"
 
 # Sweep settings
-PRESS_NAME="rkvlsh"
+PRESS_NAME=("rkv" "rkvlsh")
 MODELS=(
-  "deepseek-ai/DeepSeek-R1-Distill-Llama-8B"
-  "deepseek-ai/DeepSeek-R1-Distill-Qwen-14B"
+  # "deepseek-ai/DeepSeek-R1-Distill-Llama-8B"
+  # "deepseek-ai/DeepSeek-R1-Distill-Qwen-14B"
+  "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
 )
 DATASETS=(
-  "aime24"
-  "math500"
+  # "aime24"
+  "math500",
+  "gsm8k"
 )
 CACHE_BUDGETS=(128 256 512 1024)
 LAMBDA=0
 N_HASH_BUCKETS=8
 
-NUM_SAMPLES=0
+NUM_SAMPLES=100
 RANDOM_SEED=42
 
 # =====================
@@ -46,7 +48,8 @@ RANDOM_SEED=42
 NUM_MODELS=${#MODELS[@]}
 NUM_DATASETS=${#DATASETS[@]}
 NUM_BUDGETS=${#CACHE_BUDGETS[@]}
-TOTAL=$((NUM_MODELS * NUM_DATASETS * NUM_BUDGETS))
+NUM_PRESS_METHODS=${#PRESS_NAME[@]}
+TOTAL=$((NUM_MODELS * NUM_DATASETS * NUM_BUDGETS * NUM_PRESS_METHODS))
 
 TASK_ID=${SLURM_ARRAY_TASK_ID:-0}
 if [[ $TASK_ID -ge $TOTAL ]]; then
@@ -54,16 +57,19 @@ if [[ $TASK_ID -ge $TOTAL ]]; then
   exit 1
 fi
 
-# Map array index to (model, dataset, budget)
+# Map array index to (model, dataset, budget, press_method)
 combo=$TASK_ID
-model_idx=$(( combo / (NUM_DATASETS * NUM_BUDGETS) ))
-rem=$(( combo % (NUM_DATASETS * NUM_BUDGETS) ))
-dataset_idx=$(( rem / NUM_BUDGETS ))
-budget_idx=$(( rem % NUM_BUDGETS ))
+model_idx=$(( combo / (NUM_DATASETS * NUM_BUDGETS * NUM_PRESS_METHODS) ))
+rem=$(( combo % (NUM_DATASETS * NUM_BUDGETS * NUM_PRESS_METHODS) ))
+dataset_idx=$(( rem / (NUM_BUDGETS * NUM_PRESS_METHODS) ))
+rem=$(( rem % (NUM_BUDGETS * NUM_PRESS_METHODS) ))
+budget_idx=$(( rem / NUM_PRESS_METHODS ))
+press_idx=$(( rem % NUM_PRESS_METHODS ))
 
 MODEL_NAME=${MODELS[$model_idx]}
 DATASET=${DATASETS[$dataset_idx]}
 CACHE_BUDGET=${CACHE_BUDGETS[$budget_idx]}
+PRESS_METHOD=${PRESS_NAME[$press_idx]}
 MODEL_FILE=${MODEL_NAME//\//--}
 
 # =====================
@@ -100,8 +106,8 @@ else
   fi
 fi
 
-out_file="${RESULT_DIR}/${DATASET}____${MODEL_FILE}__${PRESS_NAME}__budget${CACHE_BUDGET}__hash_bucket${N_HASH_BUCKETS}__max_new_tokens${MAX_NEW_TOKENS}__lam${lambda_sanitized}__num_samples${NUM_SAMPLES}__sampling.jsonl"
-score_file="${RESULT_DIR}/${DATASET}____${MODEL_FILE}__${PRESS_NAME}__budget${CACHE_BUDGET}__hash_bucket${N_HASH_BUCKETS}__max_new_tokens${MAX_NEW_TOKENS}__lam${lambda_sanitized}__num_samples${NUM_SAMPLES}__sampling_score.json"
+out_file="${RESULT_DIR}/${DATASET}____${MODEL_FILE}__${PRESS_METHOD}__budget${CACHE_BUDGET}__hash_bucket${N_HASH_BUCKETS}__max_new_tokens${MAX_NEW_TOKENS}__lam${lambda_sanitized}__num_samples${NUM_SAMPLES}__sampling.jsonl"
+score_file="${RESULT_DIR}/${DATASET}____${MODEL_FILE}__${PRESS_METHOD}__budget${CACHE_BUDGET}__hash_bucket${N_HASH_BUCKETS}__max_new_tokens${MAX_NEW_TOKENS}__lam${lambda_sanitized}__num_samples${NUM_SAMPLES}__sampling_score.json"
 
 if [[ -f "$score_file" ]]; then
   echo "✅ Skipping $DATASET @ budget $CACHE_BUDGET (score exists: $(basename "$score_file"))"
@@ -112,11 +118,11 @@ if [[ -f "$out_file" ]]; then
   echo "⚠️  Results exist without score: $(basename "$out_file") — rerunning to generate score"
 fi
 
-echo "➡️  Running $DATASET | budget=$CACHE_BUDGET | lambda=$LAMBDA | model=$MODEL_NAME"
+echo "➡️  Running $DATASET | press=$PRESS_METHOD | budget=$CACHE_BUDGET | lambda=$LAMBDA | model=$MODEL_NAME"
 python "$SCRIPT_PATH" \
   --dataset="$DATASET" \
   --model_name="$MODEL_NAME" \
-  --press_name="$PRESS_NAME" \
+  --press_name="$PRESS_METHOD" \
   --cache_budget="$CACHE_BUDGET" \
   --num_samples="$NUM_SAMPLES" \
   --random_seed="$RANDOM_SEED" \
@@ -127,4 +133,4 @@ python "$SCRIPT_PATH" \
   --measure_memory=false \
   --measure_latency=true
 
-echo "✅ Done $DATASET | budget=$CACHE_BUDGET | lambda=$LAMBDA"
+echo "✅ Done $DATASET | press=$PRESS_METHOD | budget=$CACHE_BUDGET | lambda=$LAMBDA"

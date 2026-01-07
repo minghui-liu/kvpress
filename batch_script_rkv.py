@@ -26,17 +26,19 @@ RESULT_DIR = "reason/results"
 PRESS_NAME = "rkvlsh"
 LAMBDA = 0
 N_HASH_BUCKETS = 8
-NUM_SAMPLES = 0
+NUM_SAMPLES = 100
 RANDOM_SEED = 42
 
 MODELS = [
-    "deepseek-ai/DeepSeek-R1-Distill-Llama-8B",
-    "deepseek-ai/DeepSeek-R1-Distill-Qwen-14B",
+    # "deepseek-ai/DeepSeek-R1-Distill-Llama-8B",
+    # "deepseek-ai/DeepSeek-R1-Distill-Qwen-14B",
+    "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
 ]
 
 DATASETS = [
     # "aime24",
     "math500",
+    "gsm8k",
 ]
 
 CACHE_BUDGETS = [128, 256, 512, 1024]
