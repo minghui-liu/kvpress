@@ -32,7 +32,7 @@ MODELS=(
 )
 DATASETS=(
   # "aime24"
-  "math500",
+  "math500"
   "gsm8k"
 )
 CACHE_BUDGETS=(128 256 512 1024)
