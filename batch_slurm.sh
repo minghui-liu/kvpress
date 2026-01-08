@@ -73,16 +73,17 @@ PRESS_METHOD=${PRESS_NAME[$press_idx]}
 MODEL_FILE=${MODEL_NAME//\//--}
 
 # =====================
-# Dataset-specific max tokens and num samples
+# Dataset-specific max tokens
 # =====================
 case "$DATASET" in
   aime24)
     MAX_NEW_TOKENS=32768
-    NUM_SAMPLES=0
     ;;
   math500)
     MAX_NEW_TOKENS=16384
-    NUM_SAMPLES=50
+    ;;
+  gsm8k)
+    MAX_NEW_TOKENS=16384
     ;;
   *)
     echo "Unknown dataset: $DATASET"
