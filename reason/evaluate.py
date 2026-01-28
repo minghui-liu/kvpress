@@ -781,10 +781,26 @@ def evaluate(
     
     # Add timing metrics averages (from press internal timing)
     if save_obj and "prefill_time" in save_obj[0]:
-        metrics["avg_prefill_time"] = sum([obj["prefill_time"] for obj in save_obj]) / len(save_obj)
-        metrics["avg_decoding_time"] = sum([obj["decoding_time"] for obj in save_obj]) / len(save_obj)
-        metrics["avg_total_time"] = sum([obj["total_time"] for obj in save_obj]) / len(save_obj)
-        metrics["avg_output_tokens_per_second"] = sum([obj["output_tokens_per_second"] for obj in save_obj]) / len(save_obj)
+        import numpy as np
+        
+        prefill_times = [obj["prefill_time"] for obj in save_obj]
+        decoding_times = [obj["decoding_time"] for obj in save_obj]
+        total_times = [obj["total_time"] for obj in save_obj]
+        throughputs = [obj["output_tokens_per_second"] for obj in save_obj]
+        
+        metrics["avg_prefill_time"] = sum(prefill_times) / len(prefill_times)
+        metrics["avg_decoding_time"] = sum(decoding_times) / len(decoding_times)
+        metrics["avg_total_time"] = sum(total_times) / len(total_times)
+        metrics["avg_output_tokens_per_second"] = sum(throughputs) / len(throughputs)
+        
+        # Add percentile metrics for latency
+        metrics["p90_decoding_time"] = float(np.percentile(decoding_times, 90))
+        metrics["p99_decoding_time"] = float(np.percentile(decoding_times, 99))
+        metrics["p90_total_time"] = float(np.percentile(total_times, 90))
+        metrics["p99_total_time"] = float(np.percentile(total_times, 99))
+        metrics["p90_throughput"] = float(np.percentile(throughputs, 10))  # Lower is worse for throughput
+        metrics["p99_throughput"] = float(np.percentile(throughputs, 1))   # Lower is worse for throughput
+        
         metrics["total_prefill_tokens"] = sum([obj["total_prefill_tokens"] for obj in save_obj])
         metrics["total_decoding_tokens"] = sum([obj["total_decoding_tokens"] for obj in save_obj])
     

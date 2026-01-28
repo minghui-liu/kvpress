@@ -130,7 +130,7 @@ python "$SCRIPT_PATH" \
   --max_new_tokens="$MAX_NEW_TOKENS" \
   --n_hash_buckets="$N_HASH_BUCKETS" \
   --lam="$LAMBDA" \
-  --track_tokens=false \
+  --track_tokens=true \
   --measure_memory=false \
   --measure_latency=true
 
