@@ -26,20 +26,23 @@ from typing import List, Tuple
 SCRIPT_PATH = "reason/evaluate.py"
 RESULT_DIR = "reason/results"
 
-PRESS_NAME = "rkvlsh"  # Match batch.sh
+PRESS_NAMES = ["full", "h2o", "knorm", "snapkv", "streaming_llm", "rkv"]
 
 MODELS = [
-    "deepseek-ai/DeepSeek-R1-Distill-Llama-8B",
-    "deepseek-ai/DeepSeek-R1-Distill-Qwen-14B",
+    "meta-llama/Llama-3.1-8B-Instruct",  # ML
+    "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",  # DQ
+    "nvidia/Llama-3.1-Nemotron-Nano-8B-v1",  # LN
+    "deepseek-ai/DeepSeek-R1-Distill-Llama-8B",  # DL
 ]
 
 DATASETS = [
-    "aime24",
-    "math500",
+    # "aime24",
+    # "math500",
+    "gsm8k",
 ]
 
-CACHE_BUDGETS = [128, 256, 512, 1024]
-LAMBDA = 0  # Match batch.sh (was 0.01)
+CACHE_BUDGETS = [128, 256, 384, 512] #1024
+LAMBDA = 0.1  # Match batch.sh (was 0.01)
 N_HASH_BUCKETS = 8
 RANDOM_SEED = 42
 
@@ -50,6 +53,7 @@ MAX_TOKENS_MODES = ["separate"]
 NUM_SAMPLES_MAP = {
     "aime24": 0,  # Match batch.sh
     "math500": 0,
+    "gsm8k": 100,
 }
 
 
@@ -84,16 +88,17 @@ def format_lambda(lam: float) -> str:
             return str(lambda_int)
 
 
-def get_experiment_list() -> List[Tuple[str, str, int]]:
+def get_experiment_list() -> List[Tuple[str, str, str, int]]:
     """
-    Generate list of (model, dataset, budget) tuples.
+    Generate list of (press_name, model, dataset, budget) tuples.
     Returns all possible experiment combinations.
     """
     experiments = []
-    for model in MODELS:
-        for dataset in DATASETS:
-            for budget in CACHE_BUDGETS:
-                experiments.append((model, dataset, budget))
+    for press_name in PRESS_NAMES:
+        for model in MODELS:
+            for dataset in DATASETS:
+                for budget in CACHE_BUDGETS:
+                    experiments.append((press_name, model, dataset, budget))
     return experiments
 
 
@@ -110,7 +115,7 @@ def run_experiment(
     """
     model_file = model_name.replace("/", "--")
     max_new_tokens = resolve_max_tokens(dataset, max_tokens_mode)
-    num_samples = NUM_SAMPLES_MAP.get(dataset, 10)
+    num_samples = NUM_SAMPLES_MAP.get(dataset, 100)
     lambda_sanitized = format_lambda(LAMBDA)
 
     # Generate output filenames
@@ -157,7 +162,7 @@ def run_experiment(
         f"--max_new_tokens={max_new_tokens}",
         f"--n_hash_buckets={N_HASH_BUCKETS}",
         f"--lam={LAMBDA}",
-        f"--track_tokens=false",
+        f"--track_tokens=true",
         f"--measure_memory=false",
         f"--measure_latency=true",
     ]
@@ -223,7 +228,7 @@ Examples:
     
     print(f"Modes to run: {modes_to_run}")
     print(f"Total possible experiments: {total_experiments} ({len(modes_to_run)} modes × {experiments_per_mode} experiments)")
-    print(f"Models: {len(MODELS)}, Datasets: {len(DATASETS)}, Budgets: {len(CACHE_BUDGETS)}")
+    print(f"Press methods: {len(PRESS_NAMES)}, Models: {len(MODELS)}, Datasets: {len(DATASETS)}, Budgets: {len(CACHE_BUDGETS)}")
 
     # Determine range
     if args.range:
@@ -249,7 +254,7 @@ Examples:
 
     try:
         for idx, task_id in enumerate(range_list, 1):
-            # Map task_id to (mode, model, dataset, budget)
+            # Map task_id to (mode, press_name, model, dataset, budget)
             mode_idx = task_id // experiments_per_mode
             combo = task_id % experiments_per_mode
             
@@ -258,11 +263,11 @@ Examples:
                 continue
             
             max_tokens_mode = modes_to_run[mode_idx]
-            model, dataset, budget = all_experiments[combo]
+            press_name, model, dataset, budget = all_experiments[combo]
             
-            print(f"\n[{idx}/{len(range_list)}] Task #{task_id} (Mode: {max_tokens_mode})")
+            print(f"\n[{idx}/{len(range_list)}] Task #{task_id} (Mode: {max_tokens_mode}, Press: {press_name})")
             
-            result = run_experiment(model, dataset, budget, PRESS_NAME, max_tokens_mode)
+            result = run_experiment(model, dataset, budget, press_name, max_tokens_mode)
             if result:
                 successful += 1
             else:
