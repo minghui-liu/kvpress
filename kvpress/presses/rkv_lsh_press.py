@@ -36,6 +36,19 @@ class RKVLSHPress(ScorerPress):
         )  # Initialize accumulated hidden states
 
 
+    def reset_timing(self):
+        """Reset timing counters and internal accumulation state"""
+        super().reset_timing()
+        self.accumulated_tokens = 0
+        # Re-initialize buffer to avoid stale hidden states
+        # Defaulting back to 5120 as in __post_init__ or current shape
+        hs = self.acc_hidden_states.shape[-1]
+        self.acc_hidden_states = torch.zeros(
+            (1, self.compress_interval, hs),
+            dtype=self.acc_hidden_states.dtype,
+            device=self.acc_hidden_states.device,
+        )
+
     @staticmethod
     def compute_window_attention(module, hidden_states, keys, window_size, position_embeddings):
         """
@@ -88,9 +101,12 @@ class RKVLSHPress(ScorerPress):
         num_attn_heads = aw.shape[1]
         num_kv_heads = module.config.num_key_value_heads
         heads_per_group = max(1, num_attn_heads // num_kv_heads)
-        # Recover kept token indices per KV head from expanded indices tensor
-        # indices shape is [B, num_kv_heads, topk, head_dim] after expand; take batch 0 and any head_dim column
-        kept_all = indices[0, :, :, 0].contiguous()  # [num_kv_heads, topk]
+        # Recover kept token indices per KV head from indices tensor
+        # indices shape is [B, num_kv_heads, topk] (before expand) or [B, num_kv_heads, topk, head_dim] (after expand)
+        if indices.dim() == 4:
+            kept_all = indices[0, :, :, 0].contiguous()  # [num_kv_heads, topk]
+        else:
+            kept_all = indices[0, :, :].contiguous()  # [num_kv_heads, topk]
 
         for kvh in range(num_kv_heads):
             kept = kept_all[kvh]  # [topk]
@@ -223,11 +239,14 @@ class RKVLSHPress(ScorerPress):
         if self.cache_budget == 0:
             return keys, values
         kv_len = keys.shape[2]
+        layer_idx = getattr(module, "layer_idx", -1)
+        
         if self.cache_budget >= kv_len:
+            # All tokens retained - no compression needed, skip tracking to avoid excessive entries
             return keys, values
 
         if self.accumulated_tokens < self.compress_interval:
-            if getattr(module, "layer_idx", -1) == 0:
+            if layer_idx == 0:
                 self.accumulated_tokens += 1
 
             if self.debug:
@@ -240,11 +259,35 @@ class RKVLSHPress(ScorerPress):
         scores = self.score(module, self.acc_hidden_states[:, -self.window_size:, :], keys, values, attentions, False, kwargs)
         # Get indices of KV pairs with the lowest scores
         indices = scores.topk(self.cache_budget, dim=-1).indices
-        indices = indices.unsqueeze(-1).expand(-1, -1, -1, module.head_dim)
 
         if not self.latency:
             self.compute_data(module, scores, indices)
 
+        # Track token retention/eviction at first layer only
+        if layer_idx == 0 and self.tokenizer is not None and self.input_tokens is not None:
+            # Map position indices to actual token IDs
+            retained_positions = indices[0, 0, :].cpu().tolist()  # Get retained position indices
+            
+            # Extract importance scores for all positions (summed across heads)
+            importance_scores = scores[0].sum(dim=0).cpu().tolist()  # [kv_len]
+            
+            if kv_len <= len(self.input_tokens):
+                all_token_ids = self.input_tokens[:kv_len].cpu().tolist()
+                retained_token_ids = [all_token_ids[pos] for pos in retained_positions if pos < len(all_token_ids)]
+            else:
+                # If kv_len > input_tokens, we have generated tokens
+                all_token_ids = self.input_tokens.cpu().tolist() + list(range(len(self.input_tokens), kv_len))
+                retained_token_ids = [all_token_ids[pos] if pos < len(all_token_ids) else pos for pos in retained_positions]
+            
+            self.track_generation_step(
+                all_token_ids, 
+                retained_token_ids, 
+                self.tokenizer,
+                scores=importance_scores,
+                retained_positions=retained_positions
+            )
+
+        indices = indices.unsqueeze(-1).expand(-1, -1, -1, module.head_dim)
 
         # Prune keys and values
         keys = keys.gather(2, indices).contiguous()
@@ -252,7 +295,7 @@ class RKVLSHPress(ScorerPress):
         keys = torch.nan_to_num(keys, nan=0.0)
         values = torch.nan_to_num(values, nan=0.0)
 
-        if getattr(module, "layer_idx", -1) == 0:
+        if layer_idx == 0:
             self.accumulated_tokens = 0  # Reset after compression
             self.acc_hidden_states = torch.zeros(
                 (1, self.compress_interval, 3584), dtype=torch.bfloat16, device="cuda"
@@ -263,5 +306,3 @@ class RKVLSHPress(ScorerPress):
 
 
         return keys, values
-
-

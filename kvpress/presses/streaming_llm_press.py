@@ -51,3 +51,32 @@ class StreamingLLMPress(ScorerPress):
             scores[:, :, -n_local:] = 1
 
         return scores
+
+    def compress_decoding(
+        self,
+        module: nn.Module,
+        hidden_states: torch.Tensor,
+        keys: torch.Tensor,
+        values: torch.Tensor,
+        attentions: torch.Tensor,
+        kwargs: dict,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+
+        if self.cache_budget == 0:
+            return keys, values
+
+        kv_len = keys.shape[2]
+        if self.cache_budget >= kv_len:
+            return keys, values
+
+        scores = self.score(module, hidden_states, keys, values, attentions, False, kwargs)
+        indices = scores.topk(self.cache_budget, dim=-1).indices
+        kv_indices = indices.unsqueeze(-1).expand(-1, -1, -1, module.head_dim)
+
+        # Attention-based loss logging (match H2O behavior)
+        if not self.latency:
+            self.compute_attention_loss(module, attentions, indices, window_size=0)
+
+        keys = keys.gather(2, kv_indices).contiguous()
+        values = values.gather(2, kv_indices).contiguous()
+        return keys, values

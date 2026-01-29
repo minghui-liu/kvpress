@@ -23,7 +23,7 @@ class RKVPress(ScorerPress):
     cache_budget: int = 0
     compress_interval: int = 64 # aka. the buffer size 
     # compression_ratio: float = 0.0
-    window_size: int = 8 # number of observation tokens always kept in the cache
+    window_size: int = 64 # number of observation tokens always kept in the cache
     kernel_size: int = 5
     prune_step: int = 0
 
@@ -31,8 +31,37 @@ class RKVPress(ScorerPress):
         super().__post_init__()
         self.accumulated_tokens = 0  # Initialize accumulated tokens for compression interval
         self.acc_hidden_states = torch.zeros(
-            (1, self.compress_interval, 5120), dtype=torch.bfloat16, device="cuda"
+            (1, self.compress_interval, 3584), dtype=torch.bfloat16, device="cuda"
         )  # Initialize accumulated hidden states 
+        self._acc_hsize = 3584
+
+    def reset_timing(self):
+        """Reset timing counters and internal accumulation state"""
+        super().reset_timing()
+        self.accumulated_tokens = 0
+        # Re-initialize buffer to avoid stale hidden states
+        self.acc_hidden_states = torch.zeros(
+            (1, self.compress_interval, self._acc_hsize),
+            dtype=self.acc_hidden_states.dtype,
+            device=self.acc_hidden_states.device,
+        )
+
+    def _try_resize_buffer(self, hidden_states: torch.Tensor):
+        """If buffer shape mismatches, try fallback hidden sizes in order: 3584, 5120, 4096.
+        If one matches hidden_states last dim, allocate and return True. Else return False.
+        """
+        hs = hidden_states.shape[-1]
+        for cand in (3584, 5120, 4096):
+            if hs == cand:
+                self.acc_hidden_states = torch.zeros(
+                    (hidden_states.shape[0], self.compress_interval, cand),
+                    dtype=hidden_states.dtype,
+                    device=hidden_states.device,
+                )
+                self._acc_hsize = cand
+                self.accumulated_tokens = 0
+                return True
+        return False
 
     @staticmethod
     def compute_window_attention(module, hidden_states, keys, window_size, position_embeddings):
@@ -72,56 +101,6 @@ class RKVPress(ScorerPress):
 
         return attn_weights
     
-    def compute_data(self, module: nn.Module, scores, indices):
-        """Compute attention pre/post sums per head without Python loops.
-
-        Logic preserved:
-        - pre = sum over all attention weights for the windowed queries and kept keys
-        - post = sum over attention weights to the pruned keys (complement of kept)
-        - per attention head within each KV group
-        """
-        aw = GLOBAL_ATTN_WEIGHTS
-        # Use float64 accumulator for numerical parity with previous code
-        aw = aw.to(torch.float64)
-        b = 0
-        num_attn_heads = aw.shape[1]
-        num_kv_heads = module.config.num_key_value_heads
-        heads_per_group = max(1, num_attn_heads // num_kv_heads)
-        # Recover kept token indices per KV head from expanded indices tensor
-        # indices shape is [B, num_kv_heads, topk, head_dim] after expand; take batch 0 and any head_dim column
-        kept_all = indices[0, :, :, 0].contiguous()  # [num_kv_heads, topk]
-
-        for kvh in range(num_kv_heads):
-            kept = kept_all[kvh]  # [topk]
-            # Build boolean mask over key dimension; note aw excludes the last window_size keys
-            # so clamp kept indices to valid range [0, K)
-            K = aw.shape[3]
-            valid = kept < K
-            kept_valid = kept[valid]
-            keep_mask = torch.zeros(K, dtype=torch.bool, device=aw.device)
-            if kept_valid.numel() > 0:
-                keep_mask[kept_valid] = True
-            drop_mask = ~keep_mask
-
-            start_h = kvh * heads_per_group
-            end_h = min((kvh + 1) * heads_per_group, num_attn_heads)
-            for h in range(start_h, end_h):
-                attn_h = aw[b, h]  # [Q, K_eff]
-                pre = attn_h.sum(dtype=torch.float64)
-                post = attn_h[:, drop_mask].sum(dtype=torch.float64)
-
-                self.prune_step = getattr(self, "prune_step", 0) + 1
-                self.write_data(
-                    csv_path=getattr(self, "csv_path", ""),
-                    prune_step=self.prune_step,
-                    layer_idx=getattr(module, "layer_idx", -1),
-                    head_idx=int(h),
-                    kv_len_pre=int(aw.shape[2]),
-                    attn_len=int(kept.numel()),
-                    diff_indices=int(max(0, aw.shape[2] - kept.numel())),
-                    attn_pre=pre,
-                    attn_post=post,
-                )
             
     def score(
         self,
@@ -197,39 +176,101 @@ class RKVPress(ScorerPress):
             return keys, values
 
         kv_len = keys.shape[2]
+        layer_idx = getattr(module, "layer_idx", -1)
+        
         if self.cache_budget >= kv_len:
+            # All tokens retained - no compression needed, skip tracking to avoid excessive entries
             return keys, values
         
         if self.accumulated_tokens < self.compress_interval:
-            if getattr(module, "layer_idx", -1) == 0:
+            if layer_idx == 0:
                 self.accumulated_tokens += 1
             
             if self.debug:
                 print(f"[DEBUG] (STEP) accumulated_tokens: {self.accumulated_tokens} / {self.compress_interval}")
             
-            self.acc_hidden_states[:, self.accumulated_tokens - 1, :] = hidden_states
+            try:
+                self.acc_hidden_states[:, self.accumulated_tokens - 1, :] = hidden_states
+            except RuntimeError:
+                if not self._try_resize_buffer(hidden_states):
+                    # As a last resort, allocate with the actual hidden size
+                    hs = hidden_states.shape[-1]
+                    self.acc_hidden_states = torch.zeros(
+                        (hidden_states.shape[0], self.compress_interval, hs),
+                        dtype=hidden_states.dtype,
+                        device=hidden_states.device,
+                    )
+                    self._acc_hsize = hs
+                    self.accumulated_tokens = 0
+                # write after successful resize (accumulated_tokens was reset to 0 then incremented above)
+                self.acc_hidden_states[:, self.accumulated_tokens - 1, :] = hidden_states
             return keys, values
 
-        # Compute scores
-        # scores = self.score(module, hidden_states, keys, values, attentions, False, kwargs)
-        scores = self.score(module, self.acc_hidden_states[:, -self.window_size:, :], keys, values, attentions, False, kwargs)
+        # Compute scores using the buffered window
+        scores = self.score(
+            module,
+            self.acc_hidden_states[:, -self.window_size:, :],
+            keys,
+            values,
+            attentions,
+            False,
+            kwargs,
+        )
         # Get indices of KV pairs with the lowest scores
-
         indices = scores.topk(self.cache_budget, dim=-1).indices
-        indices = indices.unsqueeze(-1).expand(-1, -1, -1, module.head_dim)
 
+        # Attention-based loss logging (use real attentions only if provided)
         if not self.latency:
-            self.compute_data(module, scores, indices)
+            self.compute_attention_loss(module, attentions, indices, window_size=self.window_size)
+
+        # Track token retention/eviction at first layer only
+        if layer_idx == 0:
+            if self.debug:
+                print(f"[TRACK DEBUG] layer_idx=0, tokenizer={self.tokenizer is not None}, input_tokens={self.input_tokens is not None}")
+            if self.tokenizer is not None and self.input_tokens is not None:
+                # Map position indices to actual token IDs
+                retained_positions = indices[0, 0, :].cpu().tolist()  # Get retained position indices
+                
+                # Extract importance scores for all positions (SUM across heads)
+                # scores shape: [batch, num_heads, kv_len] -> sum across heads
+                # Using sum so evicted tokens (which get 0 in some heads) show lower total
+                importance_scores = scores[0].sum(dim=0).cpu().tolist()  # [kv_len]
+                
+                if kv_len <= len(self.input_tokens):
+                    all_token_ids = self.input_tokens[:kv_len].cpu().tolist()
+                    retained_token_ids = [all_token_ids[pos] for pos in retained_positions if pos < len(all_token_ids)]
+                else:
+                    # If kv_len > input_tokens, we have generated tokens
+                    all_token_ids = self.input_tokens.cpu().tolist() + list(range(len(self.input_tokens), kv_len))
+                    retained_token_ids = [all_token_ids[pos] if pos < len(all_token_ids) else pos for pos in retained_positions]
+                
+                self.track_generation_step(
+                    all_token_ids, 
+                    retained_token_ids, 
+                    self.tokenizer,
+                    scores=importance_scores,
+                    retained_positions=retained_positions
+                )
+                if self.debug:
+                    print(f"[TRACK DEBUG] Tracked step, generation_steps count: {len(self.generation_steps)}")
+
+        # expand for gather
+        indices = indices.unsqueeze(-1).expand(-1, -1, -1, module.head_dim)
 
         # Prune keys and values
         keys = keys.gather(2, indices).contiguous()
         values = values.gather(2, indices).contiguous()
 
-        if getattr(module, "layer_idx", -1) == 0:
-            self.accumulated_tokens = 0  # Reset after compression
+        if layer_idx == 0:
+            # Reset after compression; keep current detected hidden size or try fallbacks
+            self.accumulated_tokens = 0
+            hs = getattr(self, "_acc_hsize", 3584)
+            if hs not in (3584, 5120, 4096):
+                # if an unusual size was detected earlier, keep using it
+                pass
             self.acc_hidden_states = torch.zeros(
-                (1, self.compress_interval, 5120), dtype=torch.bfloat16, device="cuda"
-            ) # Reset accumulated hidden states
+                (1, self.compress_interval, hs), dtype=hidden_states.dtype, device=hidden_states.device
+            )
         
         if self.debug:
             print(f"[DEBUG] (PRUNED) keys length: {keys.shape[2]}")

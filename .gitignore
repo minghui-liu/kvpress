@@ -1,6 +1,17 @@
 dev_notebooks/
 results/
 reports/
+
+# Results directories
+reason/results/
+reason/results_multiturn/
+reason/attention_plots/
+attention_loss_plots/
+heatmap_images/
+heatmap_visualizations/
+text_heatmaps/
+retention_visualizations/
+ranking_analysis/
 .DS_Store
 poetry.lock
 *.parquet

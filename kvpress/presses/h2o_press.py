@@ -83,7 +83,12 @@ class H2OPress(ScorerPress):
         # Compute scores
         scores = self.score(module, hidden_states, keys, values, attentions, True, kwargs)
         # Get indices of KV pairs with the lowest scores
-        indices = scores.topk(self.cache_budget, dim=-1).indices # bsz, num_key_value_heads, cache_budget
+        indices = scores.topk(self.cache_budget, dim=-1).indices  # bsz, num_key_value_heads, cache_budget
+
+        # Log attention loss for prefill pruning as well (window_size=0: all queries)
+
+        if not self.latency:
+            self.compute_attention_loss(module, attentions, indices, window_size=0)
 
         # Prune keys and values
         kv_indices = indices.unsqueeze(-1).expand(-1, -1, -1, module.head_dim) # bsz, num_key_value_heads, cache_budget, head_dim
@@ -127,6 +132,10 @@ class H2OPress(ScorerPress):
         scores = self.score(module, hidden_states, keys, values, attentions, False, kwargs)
         # Get indices of KV pairs with the lowest scores
         indices = scores.topk(self.cache_budget, dim=-1).indices
+
+        # Attention-based loss logging (use real attentions only if provided)
+        if not self.latency:
+            self.compute_attention_loss(module, attentions, indices, window_size=0)
 
         # Prune keys and values
         kv_indices = indices.unsqueeze(-1).expand(-1, -1, -1, module.head_dim) # bsz, num_key_value_heads, cache_budget, head_dim

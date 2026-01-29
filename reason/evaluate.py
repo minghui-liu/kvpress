@@ -28,6 +28,7 @@ from commonsenseqa import commonsenseqa_formatter, commonsenseqa_scorer
 from math500 import math500_formatter, math500_scorer
 from drop import drop_formatter, drop_scorer
 from reclor import reclor_formatter, reclor_scorer
+from keyword_tracker import extract_keywords, tokenize_keywords, track_token_retention
 
 from kvpress import (
     KnormPress,
@@ -38,6 +39,8 @@ from kvpress import (
     RKVLSHPress,
     H2OPress,
 )
+from kvpress.presses.snapkv_press import SnapKVPress
+from kvpress.presses.pyramidkv_press import PyramidKVPress
 
 logger = logging.getLogger(__name__)
 
@@ -105,11 +108,22 @@ PRESS_DICT = {
     "streaming_llm": StreamingLLMPress(),
     "rkv": RKVPress(),
     "rkv_lsh": RKVLSHPress(),
+    "snapkv": SnapKVPress(),
+    "pyramidkv": PyramidKVPress(),
     "full": FullPress(),
 }
 
 
-def output_attentions(press: BasePress):
+def output_attentions(press: BasePress, latency: bool) -> bool:
+    """
+    Decide whether to request output_attentions from the model.
+
+    - If latency is False: always return True (to get full attentions for analysis).
+    - If latency is True: use the original selective behavior (only H2O-related presses).
+    """
+    if not latency:
+        return True
+
     if isinstance(press, H2OPress):
         return True
     if isinstance(press, (KeyRerotationPress, PerLayerCompressionPress)) and isinstance(
@@ -117,7 +131,6 @@ def output_attentions(press: BasePress):
     ):
         return True
     return False
-
 def collect_cuda_memory_metrics():
     stats = torch.cuda.memory_stats()
     return {
@@ -142,7 +155,7 @@ def reset_cuda_stats():
 
 
 class StopOnRepetition(StoppingCriteria):
-    def __init__(self, prompt_len: int, min_repeat: int = 8, ngram_min: int = 2, ngram_max: int = 15, window: int = 300, tokenizer=None):
+    def __init__(self, prompt_len: int, min_repeat: int = 10, ngram_min: int = 3, ngram_max: int = 15, window: int = 300, tokenizer=None):
         super().__init__()
         self.prompt_len = prompt_len
         self.min_repeat = min_repeat
@@ -155,6 +168,22 @@ class StopOnRepetition(StoppingCriteria):
         try:
             seq = input_ids[0].tolist()
             gen_ids = seq[self.prompt_len:]
+
+            # Check for boxed answer
+            if self.tokenizer is not None:
+                text = self.tokenizer.decode(gen_ids, skip_special_tokens=True)
+                # Simple check for \boxed{...} where ... is not empty
+                # We look for \boxed{ followed by at least one character that is not }
+                if "\\boxed{" in text:
+                     # Find the last occurrence
+                     idx = text.rfind("\\boxed{")
+                     # Check if there is a closing brace after that index
+                     # and at least one char content
+                     content_start = idx + 7
+                     if "}" in text[content_start:]:
+                         # Found a complete boxed expression
+                         return True
+
             if len(gen_ids) < self.ngram_min * self.min_repeat:
                 return False
             start_idx = max(0, len(gen_ids) - self.window)
@@ -201,12 +230,13 @@ def evaluate(
     max_new_tokens: Optional[int] = 2048,
     max_context_length: Optional[int] = None,
     do_sampling: bool = False,
-    skip_existing: bool = True,
+    skip_existing: bool = False,
     compression_ratio: float = 0.1,
     key_channel_compression_ratio: float = 0.5,
     debug: bool = False,
     latency: bool = False,
     resume: bool = False,
+    track_tokens: bool = False,
 ):
     """
     Evaluate a model on a dataset using a press and save the results
@@ -245,6 +275,9 @@ def evaluate(
         Whether to skip existing files, by default True
     key_channel_compression_ratio : float, optional
         key Channel Compression ratio for the channel press, by default 0.5
+    track_tokens : bool, optional
+        Whether to track token retention/eviction in KV cache, by default False.
+        When enabled, saves per-step tracking data to .step_tracking.json files.
     """
 
     assert dataset in DATASET_DICT, f"No dataset found for {dataset}"
@@ -314,11 +347,14 @@ def evaluate(
         base_csv_path = csv_dir / save_filename.with_suffix(".csv").name
         press.csv_path = str(base_csv_path)
 
-        # Initialize pipeline with the correct attention implementation
+        # Choose attention implementation per press
         model_kwargs = {"torch_dtype": "auto"}
-        if isinstance(press, H2OPress):
+        needs_attn = output_attentions(press, latency)
+        if needs_attn:
+            # When we request output_attentions, use eager attention to ensure compatibility
             model_kwargs["attn_implementation"] = "eager"
         else:
+            # Otherwise, prefer flash_attn_2 when available for speed/memory
             try:
                 import flash_attn  # noqa: F401
                 model_kwargs["attn_implementation"] = "flash_attention_2"
@@ -393,6 +429,15 @@ def evaluate(
                 with open(str(partial_path), "w") as f_:
                     for obj in save_objs:
                         f_.write(json.dumps(obj) + "\n")
+                    f_.flush()
+                    try:
+                        os.fsync(f_.fileno())
+                    except Exception:
+                        pass
+                try:
+                    os.chmod(partial_path, 0o644)
+                except Exception:
+                    pass
                 print(f"[EARLY-SAVE] Partial results saved to {partial_path}")
             except Exception as _:
                 pass
@@ -414,6 +459,22 @@ def evaluate(
             # Skip already processed samples when continuing
             if i < start_index:
                 continue
+
+            # Reset press timing and internal state for each new sample
+            if press is not None:
+                press.reset_timing()
+                
+                # Set tokenizer and input tokens for tracking if enabled
+                if track_tokens:
+                    press.set_tokenizer_and_tokens(tokenizer, None)  # Will set input_tokens after tokenizing
+                    # Enable debug for tracking diagnostics
+                    if not debug:
+                        press.debug = True  # Temporarily enable debug for tracking
+                else:
+                    # Explicitly disable tracking
+                    press.tokenizer = None
+                    press.input_tokens = None
+
             # Differentiate CSV per-sample
             press.csv_path = str(base_csv_path.with_name(base_csv_path.stem + f"__sample{i}" + base_csv_path.suffix))
             # Overwrite per-sample CSV if it already exists (one CSV per run)
@@ -428,6 +489,17 @@ def evaluate(
                 inputs = {k: v[:, :max_context_length] for k, v in inputs.items()}
             if max_new_tokens is None:
                 max_new_tokens = 16 * 1024 - inputs["input_ids"].shape[1] # use 16k for max length for now
+            
+            # Set input tokens for tracking after tokenization
+            if track_tokens and press is not None:
+                press.input_tokens = inputs["input_ids"][0]
+            
+            # Extract keywords for tracking
+            keywords = {}
+            keyword_token_ids = {}
+            if track_tokens:
+                keywords = extract_keywords(input_text)
+                keyword_token_ids = tokenize_keywords(keywords, tokenizer)
             
             if latency:
                 reset_cuda_stats()
@@ -466,7 +538,8 @@ def evaluate(
                             eos_token_id=tokenizer.eos_token_id,
                             stopping_criteria=stopping,
                             use_cache=True,
-                            output_attentions=output_attentions(press),
+                            output_attentions=needs_attn,
+                            return_dict_in_generate=needs_attn,
                         )
                 else:
                     with press(model) if press is not None else contextlib.nullcontext():
@@ -479,8 +552,12 @@ def evaluate(
                             eos_token_id=tokenizer.eos_token_id,
                             stopping_criteria=stopping,
                             use_cache=True,
-                            output_attentions=output_attentions(press),
+                            output_attentions=needs_attn,
+                            return_dict_in_generate=needs_attn,
                         )
+
+                if isinstance(outputs, dict):
+                    outputs = outputs["sequences"]
             except KeyboardInterrupt:
                 _dump_partial_results()
                 pbar.close()
@@ -528,6 +605,76 @@ def evaluate(
                 save_obj.update(timing_metrics)
                 save_obj.update(stats)
                 save_obj["execution_time"] = execution_time
+            
+            # Track keyword retention if enabled
+            if track_tokens and press is not None:
+                # Save ranking data
+                if hasattr(press, 'save_all_ranking_data'):
+                    press.save_all_ranking_data()
+                
+                # Track keyword retention
+                keyword_retention = {}
+                if hasattr(press, 'get_final_retained_indices'):
+                    final_retained_indices = list(press.get_final_retained_indices())
+                    input_token_ids = inputs["input_ids"][0].tolist()
+                    if final_retained_indices:
+                        retention_results = track_token_retention(
+                            input_token_ids,
+                            final_retained_indices,
+                            keyword_token_ids
+                        )
+                        keyword_retention = {
+                            key_type: {
+                                'total_count': results['total_keyword_tokens'],
+                                'retained_count': results['retained_keyword_tokens'],
+                                'evicted_count': results['evicted_keyword_tokens'],
+                                'retention_rate': results['retention_rate']
+                            }
+                            for key_type, results in retention_results.items()
+                        }
+                    else:
+                        # If no retention tracking, mark all as retained (full cache)
+                        keyword_retention = {
+                            key_type: {
+                                'total_count': len(token_set),
+                                'retained_count': len(token_set),
+                                'evicted_count': 0,
+                                'retention_rate': 1.0
+                            }
+                            for key_type, token_set in keyword_token_ids.items()
+                        }
+                
+                save_obj['keywords'] = keywords
+                save_obj['keyword_retention'] = keyword_retention
+                
+                # Update generated tokens with actual token IDs before collecting steps
+                if hasattr(press, 'update_generated_tokens'):
+                    all_output_token_ids = outputs[0].tolist()
+                    press.update_generated_tokens(all_output_token_ids, tokenizer)
+                
+                # Collect per-step token tracking
+                generation_steps = []
+                if hasattr(press, 'get_generation_steps'):
+                    generation_steps = press.get_generation_steps()
+                    if generation_steps:
+                        print(f"[TRACKING] Recorded {len(generation_steps)} compression events")
+                save_obj['generation_steps'] = generation_steps
+                
+                # Save to a separate detailed JSON file
+                if generation_steps:
+                    step_tracking_file = save_filename.with_suffix('.step_tracking.json')
+                    step_data = {
+                        'question_index': i,
+                        'input_text': input_text,
+                        'question_id': example.get('question', '')[:100] if 'question' in example else f'question_{i}',
+                        'model_name': model_name,
+                        'press_name': press_name,
+                        'cache_budget': cache_budget,
+                        'generation_steps': generation_steps
+                    }
+                    # Append to file incrementally (one JSON object per line)
+                    with open(str(step_tracking_file), "a", encoding='utf-8') as step_f:
+                        step_f.write(json.dumps(step_data, indent=2) + "\n")
             
             save_objs.append(save_obj)
             # Advance the per-sample progress bar and reset decoding token postfix for next sample

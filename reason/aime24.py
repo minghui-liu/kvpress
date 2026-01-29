@@ -8,6 +8,8 @@ def aime24_formatter(example):
     """
     question_text = example["problem"] + aime24_prompt
     answer_text = example["solution"]
+    if "\\boxed{" in answer_text:
+        answer_text = answer_text.split("\\boxed{")[-1].split("}")[0]
 
     return question_text, answer_text
 
@@ -28,7 +30,7 @@ def accuracy(predictions, answers):
 
 def aime24_scorer(predictions, answers):
     """
-    Score the prediction for AIME25 dataset.
+    Score the prediction for AIME24 dataset.
     """
     score_dict = {}
     score_dict["accuracy"] = accuracy(predictions, answers)
