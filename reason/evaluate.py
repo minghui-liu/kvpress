@@ -293,6 +293,14 @@ def evaluate(
                 press.enable_bucket_tracking()
 
         # Load model and tokenizer
+        # H2O press requires output_attentions=True and attn_implementation="eager"
+        h2o_config = {}
+        if press_name == "h2o":
+            h2o_config = {
+                "output_attentions": True,
+                "attn_implementation": "eager"
+            }
+        
         if "SeerAttention" in model_name:
             # SeerAttention models: Load config first, then tokenizer from base_model
             # This is the recommended approach per SeerAttention documentation
@@ -308,7 +316,8 @@ def evaluate(
                     torch_dtype=torch.bfloat16,
                         trust_remote_code=True,
                     seerattn_sparsity_method='token_budget', 
-                    seerattn_token_budget = cache_budget 
+                    seerattn_token_budget = cache_budget,
+                    **h2o_config
                 )
             model.to(device)
         elif "DeepSeek" in model_name or "Llama-3.1" in model_name or "Meta-Llama-3.1" in model_name:
@@ -320,6 +329,7 @@ def evaluate(
                 device_map="auto",
                 trust_remote_code=True,
                 torch_dtype="auto",
+                **h2o_config
             )
             # Load tokenizer with trust_remote_code=True and padding_side="left" for generation
             tokenizer = AutoTokenizer.from_pretrained(
@@ -333,7 +343,8 @@ def evaluate(
                 model_name,
                 device_map="auto",
                 trust_remote_code=True,
-                torch_dtype="auto"
+                torch_dtype="auto",
+                **h2o_config
             )
             tokenizer = AutoTokenizer.from_pretrained(
                 model_name, 
