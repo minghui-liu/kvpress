@@ -86,32 +86,45 @@ class RKVLSHPress(ScorerPress):
         """
         Initialize cos_hamming_distance_bucket on the specified device.
         If device is None, uses CUDA if available, otherwise CPU.
+
+        For large n_hash_buckets (>16), skips precomputing the full matrix
+        and uses on-the-fly computation instead to avoid memory overflow.
         """
         # Determine device: use provided device, or CUDA if available, else CPU
         if device is None:
             device = "cuda" if torch.cuda.is_available() else "cpu"
-        
-        # initialize cos_hamming_distance_bucket on the specified device
-        buckets = torch.arange(2**self.n_hash_buckets, device=device)
-        a = buckets.view(-1, 1)  # [N, 1]
-        b = buckets.view(1, -1)  # [1, N]
-        xor_vals = a ^ b
-        # Use efficient bitwise popcount - with fallback for older PyTorch versions
-        # This counts the number of set bits (Hamming weight) in each element
-        if hasattr(torch, 'bitwise_popcount'):
-            hamming = torch.bitwise_popcount(xor_vals).to(torch.int64)
+
+        self.num_buckets = 2 ** self.n_hash_buckets
+
+        # For large bucket sizes (>16 bits = 65536 buckets), avoid precomputing
+        # the full pairwise matrix to prevent memory overflow
+        if self.n_hash_buckets > 16:
+            print(f"[RKV-LSH] n_hash_buckets={self.n_hash_buckets} (num_buckets={self.num_buckets})")
+            print(f"[RKV-LSH] Using on-the-fly Hamming distance computation to avoid memory overflow")
+            self.cos_hamming_distance_bucket = None  # Signal to use on-the-fly computation
         else:
-            # Fallback: manual bit counting using bitwise operations (vectorized)
-            # This works for older PyTorch versions that don't have bitwise_popcount
-            hamming = torch.zeros_like(xor_vals, dtype=torch.int64)
-            temp = xor_vals.clone()
-            # Count bits by repeatedly shifting and masking
-            # This is O(log(max_value)) but fully vectorized on GPU
-            max_bits = self.n_hash_buckets
-            for _ in range(max_bits):
-                hamming += (temp & 1).long()
-                temp = temp >> 1
-        self.cos_hamming_distance_bucket = torch.cos(hamming / self.n_hash_buckets)
+            # For reasonable bucket sizes, pre-compute the full pairwise matrix
+            buckets = torch.arange(self.num_buckets, device=device)
+            a = buckets.view(-1, 1)  # [N, 1]
+            b = buckets.view(1, -1)  # [1, N]
+            xor_vals = a ^ b
+            # Use efficient bitwise popcount - with fallback for older PyTorch versions
+            # This counts the number of set bits (Hamming weight) in each element
+            if hasattr(torch, 'bitwise_popcount'):
+                hamming = torch.bitwise_popcount(xor_vals).to(torch.int64)
+            else:
+                # Fallback: manual bit counting using bitwise operations (vectorized)
+                # This works for older PyTorch versions that don't have bitwise_popcount
+                hamming = torch.zeros_like(xor_vals, dtype=torch.int64)
+                temp = xor_vals.clone()
+                # Count bits by repeatedly shifting and masking
+                # This is O(log(max_value)) but fully vectorized on GPU
+                max_bits = self.n_hash_buckets
+                for _ in range(max_bits):
+                    hamming += (temp & 1).long()
+                    temp = temp >> 1
+            self.cos_hamming_distance_bucket = torch.cos(hamming / self.n_hash_buckets)
+
         # Use bit shifting instead of exponentiation for faster computation
         # 1 << [0, 1, 2, ...] = [1, 2, 4, 8, ...] = [2^0, 2^1, 2^2, ...]
         # Bit shifting is faster than exponentiation, compute as int then convert to bfloat16
@@ -252,51 +265,110 @@ class RKVLSHPress(ScorerPress):
             # Compute hash codes as integers: sum of binary bits weighted by powers of 2
             hash_codes_int = torch.sum(hash_codes * powers_of_two, dim=-1)  # [B, H, Q]
 
-            # Cache cos_bucket device transfer - only move if device or dtype changed
-            device_str = str(keys.device)
-            dtype = keys.dtype  # Use the same dtype as keys (typically bfloat16)
-            if (self.cos_bucket_cached is None or 
-                self.cos_bucket_device != device_str or
-                self.cos_bucket_dtype != dtype):
-                self.cos_bucket_cached = self.cos_hamming_distance_bucket.to(keys.device).to(dtype)
-                self.cos_bucket_device = device_str
-                self.cos_bucket_dtype = dtype
-            cos_bucket = self.cos_bucket_cached  # [2**n_hash_buckets, 2**n_hash_buckets]
-            
             # Fully vectorized computation on GPU - no CPU transfers, no Python loops
             # Shape: hash_codes_int is [B, H, Q]
             bsz, num_heads, q_len = hash_codes_int.shape
-            
+
             # Flatten for batch processing: [B*H, Q]
             codes_flat = hash_codes_int.view(-1, q_len).long()  # [B*H, Q]
-            
-            # Vectorized bucket counting using scatter_add (fully GPU-accelerated)
-            # Count tokens in each bucket for each batch-head: [B*H, num_buckets]
-            counts = torch.zeros(bsz * num_heads, self.num_buckets, device=codes_flat.device, dtype=torch.bfloat16)
-            counts.scatter_add_(1, codes_flat, torch.ones_like(codes_flat, dtype=torch.bfloat16))
-            
-            # Track bucket counts if enabled
-            if self.track_buckets:
-                # Aggregate counts across all heads and batch
-                total_counts = counts.sum(dim=0).cpu().numpy().astype(np.int64)
-                if self.bucket_counts is None:
-                    self.bucket_counts = total_counts
-                else:
-                    self.bucket_counts += total_counts
-            
-            # Compute total counts per batch-head: [B*H, 1]
-            total_counts = counts.sum(dim=1, keepdim=True)  # [B*H, 1]
-            
+            device = codes_flat.device
+            dtype = keys.dtype
+
             # According to paper: S_i' = (Σ_{i≠j} c_j cos(Hamming(i,j)/b)) / (Σ_j c_j)
-            # Optimized: compute (counts @ cos_bucket - counts) / total_counts in one step
-            # This excludes self-similarity (diagonal terms where cos(0) = 1.0)
-            # Combined operation to reduce memory traffic
-            avg_cosine = (counts @ cos_bucket - counts) / (total_counts + 1e-8)  # [B*H, num_buckets]
-            
-            # Map each token's bucket code to its average cosine value
-            # Use gather for efficient indexing
-            redundancy_flat = avg_cosine.gather(1, codes_flat)  # [B*H, Q]
-            
+            # Two paths: precomputed matrix (fast) or sparse on-the-fly computation (memory-efficient)
+            if self.cos_hamming_distance_bucket is not None:
+                # Fast path: use precomputed cosine hamming distance matrix
+                # Vectorized bucket counting using scatter_add (fully GPU-accelerated)
+                # Count tokens in each bucket for each batch-head: [B*H, num_buckets]
+                counts = torch.zeros(bsz * num_heads, self.num_buckets, device=device, dtype=torch.bfloat16)
+                counts.scatter_add_(1, codes_flat, torch.ones_like(codes_flat, dtype=torch.bfloat16))
+
+                # Track bucket counts if enabled
+                if self.track_buckets:
+                    # Aggregate counts across all heads and batch
+                    bucket_counts_total = counts.sum(dim=0).cpu().numpy().astype(np.int64)
+                    if self.bucket_counts is None:
+                        self.bucket_counts = bucket_counts_total
+                    else:
+                        self.bucket_counts += bucket_counts_total
+
+                # Compute total counts per batch-head: [B*H, 1]
+                total_counts = counts.sum(dim=1, keepdim=True)  # [B*H, 1]
+
+                device_str = str(keys.device)
+                if (self.cos_bucket_cached is None or
+                    self.cos_bucket_device != device_str or
+                    self.cos_bucket_dtype != dtype):
+                    self.cos_bucket_cached = self.cos_hamming_distance_bucket.to(keys.device).to(dtype)
+                    self.cos_bucket_device = device_str
+                    self.cos_bucket_dtype = dtype
+                cos_bucket = self.cos_bucket_cached  # [num_buckets, num_buckets]
+
+                # Optimized: compute (counts @ cos_bucket - counts) / total_counts in one step
+                # This excludes self-similarity (diagonal terms where cos(0) = 1.0)
+                avg_cosine = (counts @ cos_bucket - counts) / (total_counts + 1e-8)  # [B*H, num_buckets]
+
+                # Map each token's bucket code to its average cosine value
+                redundancy_flat = avg_cosine.gather(1, codes_flat)  # [B*H, Q]
+            else:
+                # Memory-efficient path: fully sparse computation for large bucket spaces
+                # Never materialize tensors with num_buckets dimension to avoid OOM
+
+                # Get unique bucket codes that actually have tokens (across all batch-heads)
+                unique_codes = torch.unique(codes_flat)  # [num_occupied_buckets]
+                num_occupied = unique_codes.shape[0]
+
+                # Create mapping from bucket codes to sparse indices
+                # Use a dictionary-like sparse mapping (only stores occupied buckets)
+                max_code = unique_codes.max().item() + 1
+                code_to_idx = torch.full((max_code,), -1, device=device, dtype=torch.long)
+                code_to_idx[unique_codes] = torch.arange(num_occupied, device=device)
+
+                # Map codes_flat to sparse indices: [B*H, Q]
+                codes_idx = code_to_idx[codes_flat]  # [B*H, Q]
+
+                # Count tokens per unique bucket (sparse): [B*H, num_occupied]
+                counts_sparse = torch.zeros(bsz * num_heads, num_occupied, device=device, dtype=dtype)
+                counts_sparse.scatter_add_(1, codes_idx, torch.ones_like(codes_flat, dtype=dtype))
+
+                # Track bucket counts if enabled
+                if self.track_buckets:
+                    # Aggregate counts for occupied buckets
+                    bucket_counts_sparse = counts_sparse.sum(dim=0).cpu().numpy().astype(np.int64)
+                    # Create full bucket counts array (only for tracking)
+                    if self.bucket_counts is None:
+                        self.bucket_counts = np.zeros(self.num_buckets, dtype=np.int64)
+                    self.bucket_counts[unique_codes.cpu().numpy()] += bucket_counts_sparse
+
+                # Compute total counts per batch-head: [B*H, 1]
+                total_counts = counts_sparse.sum(dim=1, keepdim=True)  # [B*H, 1]
+
+                # Compute hamming distances only between occupied buckets
+                # XOR between all pairs of occupied buckets
+                a = unique_codes.view(-1, 1)  # [num_occupied, 1]
+                b = unique_codes.view(1, -1)  # [1, num_occupied]
+                xor_vals = a ^ b  # [num_occupied, num_occupied]
+
+                # Count bits using bitwise_popcount
+                if hasattr(torch, 'bitwise_popcount'):
+                    hamming = torch.bitwise_popcount(xor_vals).to(torch.float32)
+                else:
+                    # Fallback: manual bit counting
+                    hamming = torch.zeros_like(xor_vals, dtype=torch.float32)
+                    temp = xor_vals.clone()
+                    for _ in range(self.n_hash_buckets):
+                        hamming += (temp & 1).float()
+                        temp = temp >> 1
+
+                # Compute cosine similarity from hamming distance
+                cos_hamming = torch.cos(hamming / self.n_hash_buckets).to(dtype)  # [num_occupied, num_occupied]
+
+                # Compute weighted cosine similarity (sparse): [B*H, num_occupied]
+                avg_cosine_sparse = (counts_sparse @ cos_hamming - counts_sparse) / (total_counts + 1e-8)
+
+                # Map back to original tokens: [B*H, Q]
+                redundancy_flat = avg_cosine_sparse.gather(1, codes_idx)  # [B*H, Q]
+
             # Reshape back to [B, H, Q]
             redundancy = redundancy_flat.view(bsz, num_heads, q_len)
             redundancy = F.softmax(redundancy, dim=-1, dtype=torch.bfloat16).to(keys.dtype)
