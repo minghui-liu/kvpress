@@ -17,6 +17,7 @@ import argparse
 import subprocess
 import sys
 import os
+import time
 from pathlib import Path
 from typing import List, Tuple
 
@@ -26,24 +27,25 @@ from typing import List, Tuple
 SCRIPT_PATH = "reason/evaluate.py"
 RESULT_DIR = "reason/results"
 
-PRESS_NAMES = ["full", "h2o", "knorm", "snapkv", "streaming_llm", "rkv"]
+PRESS_NAMES = ["rkv","rkvlsh"]
 
 MODELS = [
-    "meta-llama/Llama-3.1-8B-Instruct",  # ML
+    # "meta-llama/Llama-3.1-8B-Instruct",  # ML
     "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",  # DQ
-    "nvidia/Llama-3.1-Nemotron-Nano-8B-v1",  # LN
-    "deepseek-ai/DeepSeek-R1-Distill-Llama-8B",  # DL
+    "deepseek-ai/DeepSeek-R1-Distill-Qwen-14B",  # DQ
+    #"nvidia/Llama-3.1-Nemotron-Nano-8B-v1",  # LN
+    #"deepseek-ai/DeepSeek-R1-Distill-Llama-8B",  # DL
 ]
 
 DATASETS = [
     # "aime24",
-    # "math500",
-    "gsm8k",
+    "math500",
+    #"gsm8k",
 ]
 
-CACHE_BUDGETS = [128, 256, 384, 512] #1024
+CACHE_BUDGETS = [1024] #1024
 LAMBDA = 0.1  # Match batch.sh (was 0.01)
-N_HASH_BUCKETS = 8
+N_HASH_BUCKETS = 16
 RANDOM_SEED = 42
 
 # Max tokens modes to traverse (match batch.sh)
@@ -52,7 +54,7 @@ MAX_TOKENS_MODES = ["separate"]
 # Dataset-specific NUM_SAMPLES
 NUM_SAMPLES_MAP = {
     "aime24": 0,  # Match batch.sh
-    "math500": 0,
+    "math500": 15,
     "gsm8k": 100,
 }
 
@@ -108,10 +110,10 @@ def run_experiment(
     cache_budget: int,
     press_name: str,
     max_tokens_mode: str,
-) -> bool:
+) -> tuple[bool, float]:
     """
     Run a single experiment.
-    Returns True if successful, False otherwise.
+    Returns (success: bool, elapsed_time: float in seconds).
     """
     model_file = model_name.replace("/", "--")
     max_new_tokens = resolve_max_tokens(dataset, max_tokens_mode)
@@ -163,21 +165,26 @@ def run_experiment(
         f"--n_hash_buckets={N_HASH_BUCKETS}",
         f"--lam={LAMBDA}",
         f"--track_tokens=true",
+        f"--enable_qualitative_analysis=true",
         f"--measure_memory=false",
         f"--measure_latency=true",
     ]
 
     try:
+        start_time = time.time()
         result = subprocess.run(cmd, check=True)
-        print(f"✓ Completed: {dataset} @ budget {cache_budget}")
-        return True
+        elapsed_time = time.time() - start_time
+        print(f"✓ Completed: {dataset} @ budget {cache_budget} (Time: {elapsed_time:.2f}s)")
+        return True, elapsed_time
     except subprocess.CalledProcessError as e:
-        print(f"✗ Failed: {dataset} @ budget {cache_budget}")
+        elapsed_time = time.time() - start_time
+        print(f"✗ Failed: {dataset} @ budget {cache_budget} (Time: {elapsed_time:.2f}s)")
         print(f"  Error: {e}")
-        return False
+        return False, elapsed_time
     except KeyboardInterrupt:
-        print(f"\n⊘ Interrupted: {dataset} @ budget {cache_budget}")
-        return False
+        elapsed_time = time.time() - start_time
+        print(f"\n⊘ Interrupted: {dataset} @ budget {cache_budget} (Time: {elapsed_time:.2f}s)")
+        return False, elapsed_time
 
 
 def main():
@@ -251,6 +258,8 @@ Examples:
     # Run experiments
     successful = 0
     failed = 0
+    total_wall_time = 0.0
+    experiment_times = []
 
     try:
         for idx, task_id in enumerate(range_list, 1):
@@ -267,8 +276,11 @@ Examples:
             
             print(f"\n[{idx}/{len(range_list)}] Task #{task_id} (Mode: {max_tokens_mode}, Press: {press_name})")
             
-            result = run_experiment(model, dataset, budget, press_name, max_tokens_mode)
-            if result:
+            success, elapsed_time = run_experiment(model, dataset, budget, press_name, max_tokens_mode)
+            total_wall_time += elapsed_time
+            experiment_times.append((press_name, model, dataset, budget, elapsed_time))
+            
+            if success:
                 successful += 1
             else:
                 failed += 1
@@ -280,9 +292,20 @@ Examples:
     print(f"\n{'='*70}")
     print(f"SUMMARY")
     print(f"{'='*70}")
-    print(f"Total run: {len(experiments)}")
+    print(f"Total experiments run: {successful + failed}")
     print(f"Successful: {successful}")
     print(f"Failed: {failed}")
+    if experiment_times:
+        print(f"\nWall Clock Times:")
+        print(f"  Total: {total_wall_time:.2f}s ({total_wall_time/60:.2f} min)")
+        print(f"  Average per experiment: {total_wall_time/(successful+failed):.2f}s")
+        print(f"  Min: {min(t[4] for t in experiment_times):.2f}s")
+        print(f"  Max: {max(t[4] for t in experiment_times):.2f}s")
+        print(f"\nTop 5 slowest experiments:")
+        sorted_times = sorted(experiment_times, key=lambda x: x[4], reverse=True)
+        for i, (press, model, dataset, budget, elapsed) in enumerate(sorted_times[:5], 1):
+            model_short = model.split("/")[-1][:20]
+            print(f"  {i}. {press:15} | {model_short:20} | {dataset:10} | budget{budget:4d} | {elapsed:7.2f}s")
     print(f"{'='*70}\n")
 
     if failed > 0:

@@ -151,6 +151,7 @@ def evaluate(
     lam:float=0.1,
     track_tokens: bool = False,
     track_buckets: bool = False,
+    enable_qualitative_analysis: bool = False,
     measure_memory: bool = True,
     measure_latency: bool = True
 ):
@@ -191,6 +192,8 @@ def evaluate(
         Whether to skip existing files, by default True
     key_channel_compression_ratio : float, optional
         key Channel Compression ratio for the channel press, by default 0.5
+    enable_qualitative_analysis : bool, optional
+        Enable qualitative token retention/eviction analysis for RKV-LSH, by default False
     measure_memory : bool, optional
         Whether to measure GPU memory usage, by default True
     measure_latency : bool, optional
@@ -291,6 +294,9 @@ def evaluate(
             # Enable bucket tracking if requested
             if track_buckets:
                 press.enable_bucket_tracking()
+            # Enable qualitative analysis if requested
+            if enable_qualitative_analysis:
+                press.enable_qualitative_mode()
 
         # Load model and tokenizer
         # H2O press requires output_attentions=True and attn_implementation="eager"
@@ -472,9 +478,9 @@ def evaluate(
                     if track_buckets and hasattr(press, 'reset_bucket_counts'):
                         press.reset_bucket_counts()
                     
-                    # Set tokenizer and input tokens ONLY if track_tokens is explicitly True
-                    # Explicitly check track_tokens == True to prevent setting when False
-                    if track_tokens == True:
+                    # Set tokenizer and input tokens if track_tokens OR enable_qualitative_analysis is True
+                    # Both features need the tokenizer to decode token IDs
+                    if track_tokens == True or enable_qualitative_analysis == True:
                         if hasattr(press, 'set_tokenizer_and_tokens'):
                             press.set_tokenizer_and_tokens(tokenizer, inputs["input_ids"][0])
                         # Also set tokenizer directly for per-step tracking (for all presses including FullPress)
@@ -487,8 +493,8 @@ def evaluate(
                             press.tokenizer = tokenizer
                         if not hasattr(press, 'input_tokens') or press.input_tokens is None:
                             press.input_tokens = inputs["input_ids"][0]
-                    elif track_tokens == False:
-                        # When track_tokens is explicitly False, set tokenizer to None to prevent ALL tracking
+                    elif track_tokens == False and enable_qualitative_analysis == False:
+                        # When both track_tokens and enable_qualitative_analysis are False, clear tokenizer
                         # This ensures no ranking data, no step tracking, no token tracking
                         if hasattr(press, 'tokenizer'):
                             press.tokenizer = None
@@ -732,7 +738,12 @@ def evaluate(
             
             # Clear save_obj to free memory
             del save_obj
-            
+
+            # Save current sample qualitative data and prepare for next sample
+            # next_sample() will automatically save the current sample incrementally
+            if enable_qualitative_analysis and press_name == "rkvlsh" and press is not None:
+                press.next_sample()
+
             print(f"✅ [{i+1}/{len(ds)}] Saved result for question {i+1} to {save_filename.name} (Memory: {memory_usage:.2f} GB)")
             
             # Additional aggressive memory cleanup every 3 samples to prevent accumulation
@@ -762,7 +773,15 @@ def evaluate(
                 gc.collect()
                 gc.collect()  # Second pass
                 print(f"   🧹 Aggressive memory cleanup after {i+1} samples")
-        
+
+        # Save qualitative analysis data after all samples are processed
+        if enable_qualitative_analysis and press_name == "rkvlsh" and press is not None:
+            # Save the last sample's data (since next_sample() is only called between samples)
+            press.save_current_sample_incremental()
+            # Generate the final summary file
+            press.save_qualitative_analysis()
+            print(f"✅ Qualitative analysis complete - check {press.qualitative_output_file}")
+
         print(f"\n✅ All results saved to {save_filename}")
     # end of the if save_filename.exists()
 

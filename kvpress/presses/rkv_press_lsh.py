@@ -65,6 +65,8 @@ class RKVLSHPress(ScorerPress):
         self.enable_qualitative_analysis = False
         self.qualitative_data = []  # Store detailed token retention/eviction data
         self.current_sample_id = 0
+        self.current_sample_data = []  # Store eviction steps for current sample only
+        self.qualitative_output_file = None  # Output file path for incremental saving
 
     def enable_bucket_tracking(self):
         """Enable bucket count tracking for analysis."""
@@ -87,13 +89,58 @@ class RKVLSHPress(ScorerPress):
             return counts_copy
         return None
 
-    def enable_qualitative_mode(self):
+    def enable_qualitative_mode(self, output_file=None):
         """Enable qualitative analysis mode to track token retention decisions."""
         self.enable_qualitative_analysis = True
+
+        # Set up output file path
+        if output_file is None:
+            method_name = 'rkv' if self.lam == 1.0 else ('rkvlsh' if self.lam == 0.0 else f'hybrid_lam{self.lam}')
+            output_file = f"token_decisions_{method_name}_budget{self.cache_budget}_buckets{self.n_hash_buckets}.jsonl"
+
+        self.qualitative_output_file = os.path.join(self.save_dir, output_file)
+        os.makedirs(self.save_dir, exist_ok=True)
+
+        # Clear the file if it exists (start fresh)
+        if os.path.exists(self.qualitative_output_file):
+            os.remove(self.qualitative_output_file)
+
         print(f"[RKV-LSH] Qualitative analysis mode enabled")
+        print(f"[RKV-LSH] Incremental output will be saved to: {self.qualitative_output_file}")
+
+    def save_current_sample_incremental(self):
+        """Save the current sample's qualitative data incrementally to file."""
+        if not self.enable_qualitative_analysis:
+            return
+
+        if len(self.current_sample_data) == 0:
+            return
+
+        # Create sample entry
+        sample_entry = {
+            'sample_id': self.current_sample_id,
+            'num_eviction_steps': len(self.current_sample_data),
+            'eviction_steps': self.current_sample_data
+        }
+
+        # Append to JSONL file (one JSON object per line)
+        with open(self.qualitative_output_file, 'a') as f:
+            f.write(json.dumps(sample_entry) + '\n')
+
+        print(f"[RKV-LSH] Sample {self.current_sample_id} qualitative data saved ({len(self.current_sample_data)} eviction steps)")
+
+        # Keep in main list for summary generation later
+        self.qualitative_data.extend(self.current_sample_data)
+
+        # Clear current sample data to free memory
+        self.current_sample_data = []
 
     def next_sample(self):
         """Mark the start of a new sample for qualitative analysis."""
+        # Save current sample data before moving to next
+        if self.enable_qualitative_analysis:
+            self.save_current_sample_incremental()
+
         self.current_sample_id += 1
     
     def initialize_buckets(self, device=None):
@@ -616,7 +663,7 @@ class RKVLSHPress(ScorerPress):
         # Create log entry for this eviction step
         log_entry = {
             'sample_id': self.current_sample_id,
-            'eviction_step': len(self.qualitative_data),  # Track which eviction step this is
+            'eviction_step': len(self.current_sample_data),  # Track which eviction step within this sample
             'kv_len': kv_len,
             'cache_budget': self.cache_budget,
             'lambda': self.lam,
@@ -645,21 +692,20 @@ class RKVLSHPress(ScorerPress):
             'repetitive_density_evicted': repetitive_density_evicted,
         }
 
-        self.qualitative_data.append(log_entry)
+        # Append to current sample data (will be saved incrementally)
+        self.current_sample_data.append(log_entry)
 
-        # Print summary if verbose
-        if len(self.qualitative_data) <= 3:  # Only print first few
+        # Print summary if verbose (only for first sample and first few steps)
+        if self.current_sample_id == 0 and len(self.current_sample_data) <= 3:  # Only print first few
             print(f"[Qualitative] Sample {self.current_sample_id}, Step {log_entry['eviction_step']}: "
                   f"Retained {len(retained_tokens)}/{kv_len} tokens")
 
-    def save_qualitative_analysis(self, output_file=None):
+    def save_qualitative_analysis(self):
         """
-        Save qualitative analysis data to JSON file.
+        Generate final summary file after incremental saves are complete.
 
-        Output format:
-        - Each entry represents one eviction step
-        - Contains all tokens with their retention status and scores
-        - Includes separate lists of retained/evicted tokens for easy analysis
+        The detailed data has already been saved incrementally to JSONL file.
+        This method generates a human-readable summary.
         """
         if not self.enable_qualitative_analysis:
             print("[RKV-LSH] Qualitative analysis not enabled, skipping save")
@@ -669,35 +715,15 @@ class RKVLSHPress(ScorerPress):
             print("[RKV-LSH] No qualitative data collected")
             return
 
-        if output_file is None:
-            method_name = 'rkv' if self.lam == 1.0 else ('rkvlsh' if self.lam == 0.0 else f'hybrid_lam{self.lam}')
-            output_file = f"token_decisions_{method_name}_budget{self.cache_budget}_buckets{self.n_hash_buckets}.json"
-
-        output_path = os.path.join(self.save_dir, output_file)
-        os.makedirs(self.save_dir, exist_ok=True)
-
-        # Add metadata
-        output_data = {
-            'metadata': {
-                'method': 'RKV' if self.lam == 1.0 else ('RKV-LSH' if self.lam == 0.0 else f'Hybrid(λ={self.lam})'),
-                'lambda': self.lam,
-                'n_hash_buckets': self.n_hash_buckets,
-                'cache_budget': self.cache_budget,
-                'total_samples': self.current_sample_id + 1,
-                'total_eviction_steps': len(self.qualitative_data),
-            },
-            'eviction_steps': self.qualitative_data
-        }
-
-        with open(output_path, 'w') as f:
-            json.dump(output_data, f, indent=2)
-
-        print(f"[RKV-LSH] Qualitative analysis saved to: {output_path}")
+        print(f"[RKV-LSH] Qualitative analysis complete:")
         print(f"  - Total samples: {self.current_sample_id + 1}")
         print(f"  - Total eviction steps: {len(self.qualitative_data)}")
+        print(f"  - Incremental data saved to: {self.qualitative_output_file}")
 
-        # Also save a human-readable summary
-        self._save_qualitative_summary(output_path.replace('.json', '_summary.txt'))
+        # Generate human-readable summary
+        summary_path = self.qualitative_output_file.replace('.jsonl', '_summary.txt')
+        self._save_qualitative_summary(summary_path)
+        print(f"  - Summary saved to: {summary_path}")
 
     def _save_qualitative_summary(self, summary_file):
         """
