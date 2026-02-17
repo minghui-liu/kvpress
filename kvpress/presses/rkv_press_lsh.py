@@ -568,21 +568,50 @@ class RKVLSHPress(ScorerPress):
         retained_tokens = []
         evicted_tokens = []
 
+        # Track repetitive/filler tokens of interest
+        repetitive_keywords = {'wait', 'so', 'but'}
+        repetitive_tokens_all = []
+        repetitive_tokens_retained = []
+        repetitive_tokens_evicted = []
+
         for pos in all_positions:
+            token_id = all_token_ids[pos] if pos < len(all_token_ids) else None
+
+            # Decode token to check if it's a repetitive keyword
+            if token_id is not None:
+                token_text = self.tokenizer.decode([token_id], skip_special_tokens=False).strip().lower()
+                is_repetitive = token_text in repetitive_keywords
+            else:
+                is_repetitive = False
+
             token_info = {
                 'position': pos,
-                'token_id': all_token_ids[pos] if pos < len(all_token_ids) else None,
+                'token_id': token_id,
                 'retained': pos in retained_positions,
                 'final_score': float(final_scores[pos]),
                 'attention_score': float(attention_scores[pos]) if attention_scores is not None else None,
                 'redundancy_score': float(redundancy_scores[pos]) if redundancy_scores is not None else None,
+                'is_repetitive_keyword': is_repetitive,  # Flag for wait/so/but
             }
 
             all_tokens.append(token_info)
+            if is_repetitive:
+                repetitive_tokens_all.append(token_info)
+
             if pos in retained_positions:
                 retained_tokens.append(token_info)
+                if is_repetitive:
+                    repetitive_tokens_retained.append(token_info)
             else:
                 evicted_tokens.append(token_info)
+                if is_repetitive:
+                    repetitive_tokens_evicted.append(token_info)
+
+        # Calculate repetitive keyword densities
+        num_total = len(all_positions)
+        repetitive_density_all = len(repetitive_tokens_all) / num_total if num_total > 0 else 0
+        repetitive_density_retained = len(repetitive_tokens_retained) / len(retained_tokens) if len(retained_tokens) > 0 else 0
+        repetitive_density_evicted = len(repetitive_tokens_evicted) / len(evicted_tokens) if len(evicted_tokens) > 0 else 0
 
         # Create log entry for this eviction step
         log_entry = {
@@ -602,9 +631,18 @@ class RKVLSHPress(ScorerPress):
             'evicted_tokens': evicted_tokens,
 
             # Summary statistics
-            'num_total': len(all_positions),
+            'num_total': num_total,
             'num_retained': len(retained_tokens),
             'num_evicted': len(evicted_tokens),
+
+            # Repetitive keyword tracking (wait/so/but)
+            'repetitive_keywords_tracked': list(repetitive_keywords),
+            'num_repetitive_all': len(repetitive_tokens_all),
+            'num_repetitive_retained': len(repetitive_tokens_retained),
+            'num_repetitive_evicted': len(repetitive_tokens_evicted),
+            'repetitive_density_all': repetitive_density_all,
+            'repetitive_density_retained': repetitive_density_retained,
+            'repetitive_density_evicted': repetitive_density_evicted,
         }
 
         self.qualitative_data.append(log_entry)
@@ -696,6 +734,15 @@ class RKVLSHPress(ScorerPress):
                 f.write(f"Retained: {entry['num_retained']}\n")
                 f.write(f"Evicted: {entry['num_evicted']}\n\n")
 
+                # Show repetitive keyword statistics
+                f.write(f"Repetitive Keywords Tracked: {entry.get('repetitive_keywords_tracked', [])}\n")
+                f.write(f"Repetitive tokens in all: {entry.get('num_repetitive_all', 0)} "
+                       f"({entry.get('repetitive_density_all', 0):.2%})\n")
+                f.write(f"Repetitive tokens retained: {entry.get('num_repetitive_retained', 0)} "
+                       f"({entry.get('repetitive_density_retained', 0):.2%})\n")
+                f.write(f"Repetitive tokens evicted: {entry.get('num_repetitive_evicted', 0)} "
+                       f"({entry.get('repetitive_density_evicted', 0):.2%})\n\n")
+
                 # Sort retained by score (highest first)
                 retained = sorted(entry['retained_tokens'], key=lambda x: x['final_score'], reverse=True)
                 # Sort evicted by score (lowest first)
@@ -731,8 +778,20 @@ class RKVLSHPress(ScorerPress):
             f.write("=" * 80 + "\n")
             total_retained = sum(entry['num_retained'] for entry in self.qualitative_data)
             total_evicted = sum(entry['num_evicted'] for entry in self.qualitative_data)
-            f.write(f"Total tokens retained across all steps: {total_retained}\n")
-            f.write(f"Total tokens evicted across all steps: {total_evicted}\n")
+            total_repetitive_all = sum(entry.get('num_repetitive_all', 0) for entry in self.qualitative_data)
+            total_repetitive_retained = sum(entry.get('num_repetitive_retained', 0) for entry in self.qualitative_data)
+            total_repetitive_evicted = sum(entry.get('num_repetitive_evicted', 0) for entry in self.qualitative_data)
+
+            f.write(f"Total tokens retained: {total_retained}\n")
+            f.write(f"Total tokens evicted: {total_evicted}\n\n")
+
+            f.write(f"Repetitive keyword (wait/so/but) statistics:\n")
+            f.write(f"  Total repetitive tokens: {total_repetitive_all}\n")
+            f.write(f"  Repetitive tokens retained: {total_repetitive_retained} "
+                   f"({total_repetitive_retained/total_retained:.2%} of retained)\n")
+            f.write(f"  Repetitive tokens evicted: {total_repetitive_evicted} "
+                   f"({total_repetitive_evicted/total_evicted:.2%} of evicted)\n")
+            f.write(f"\nThis shows how effectively {method_name} identifies and drops repetitive filler words.\n")
 
         print(f"[RKV-LSH] Summary saved to: {summary_file}")
 
