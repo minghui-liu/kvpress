@@ -59,7 +59,12 @@ class RKVLSHPress(ScorerPress):
         # Bucket tracking for analysis
         self.track_buckets = False
         self.bucket_counts = None  # Will be initialized when tracking is enabled
-        self.bucket_counts_per_sample = []  # Store counts for each sample 
+        self.bucket_counts_per_sample = []  # Store counts for each sample
+
+        # Qualitative analysis mode
+        self.enable_qualitative_analysis = False
+        self.qualitative_data = []  # Store detailed token retention/eviction data
+        self.current_sample_id = 0
 
     def enable_bucket_tracking(self):
         """Enable bucket count tracking for analysis."""
@@ -81,6 +86,15 @@ class RKVLSHPress(ScorerPress):
             self.bucket_counts_per_sample.append(counts_copy)
             return counts_copy
         return None
+
+    def enable_qualitative_mode(self):
+        """Enable qualitative analysis mode to track token retention decisions."""
+        self.enable_qualitative_analysis = True
+        print(f"[RKV-LSH] Qualitative analysis mode enabled")
+
+    def next_sample(self):
+        """Mark the start of a new sample for qualitative analysis."""
+        self.current_sample_id += 1
     
     def initialize_buckets(self, device=None):
         """
@@ -383,7 +397,15 @@ class RKVLSHPress(ScorerPress):
         else:
             # Combination of both
             final_scores = self.lam * scores + (1 - self.lam) * redundancy
-        
+
+        # Store component scores for qualitative analysis
+        if self.enable_qualitative_analysis:
+            # Store both attention and redundancy scores (even if one is None)
+            # This allows comparison between RKV (lam=1) and RKV-LSH (lam<1)
+            self._last_attention_scores = scores.detach().cpu() if scores is not None else None
+            self._last_redundancy_scores = redundancy.detach().cpu() if redundancy is not None else None
+            self._last_final_scores = final_scores.detach().cpu()
+
         # Add back the observation window. Use max score to make sure the window is not pruned.
         # Keep max computation on GPU, only convert to Python scalar for padding value (required by F.pad)
         max_score = final_scores.max()
@@ -481,6 +503,9 @@ class RKVLSHPress(ScorerPress):
                     retained_token_ids = [all_token_ids[pos] if pos < len(self.input_tokens) else pos for pos in retained_positions]
                 self.track_generation_step(all_token_ids, retained_token_ids, self.tokenizer)
 
+            # Log qualitative decisions if enabled
+            self.log_qualitative_decisions(indices, kv_len)
+
         # Prune keys and values
         keys = keys.gather(2, indices).contiguous()
         values = values.gather(2, indices).contiguous()
@@ -506,6 +531,210 @@ class RKVLSHPress(ScorerPress):
         """Set tokenizer and input tokens for text decoding."""
         self.tokenizer = tokenizer
         self.input_tokens = input_tokens
+
+    def log_qualitative_decisions(self, indices, kv_len):
+        """
+        Log detailed token retention/eviction decisions.
+
+        For each eviction step, logs:
+        - All tokens in the cache (position, text, token_id)
+        - Which tokens were retained vs evicted
+        - Attention scores (if lam > 0)
+        - Redundancy scores (if lam < 1)
+        - Final combined scores used for decision
+
+        This allows analysis of what kinds of tokens each method drops.
+        """
+        if not self.enable_qualitative_analysis or self.tokenizer is None:
+            return
+
+        # Get all token IDs in the current cache
+        if kv_len <= len(self.input_tokens):
+            all_token_ids = self.input_tokens[:kv_len].cpu().tolist()
+        else:
+            all_token_ids = self.input_tokens.cpu().tolist() + list(range(len(self.input_tokens), kv_len))
+
+        # Get which positions were retained (kept in cache)
+        retained_positions = set(indices[0, 0, :, 0].cpu().tolist())
+        all_positions = list(range(kv_len))
+
+        # Get scores (excluding window which is always kept)
+        final_scores = self._last_final_scores[0, 0, :-self.window_size].numpy()
+        attention_scores = self._last_attention_scores[0, 0, :].numpy() if self._last_attention_scores is not None else None
+        redundancy_scores = self._last_redundancy_scores[0, 0, :].numpy() if self._last_redundancy_scores is not None else None
+
+        # Build detailed token list (JSON only stores IDs, not text to keep file small)
+        all_tokens = []
+        retained_tokens = []
+        evicted_tokens = []
+
+        for pos in all_positions:
+            token_info = {
+                'position': pos,
+                'token_id': all_token_ids[pos] if pos < len(all_token_ids) else None,
+                'retained': pos in retained_positions,
+                'final_score': float(final_scores[pos]),
+                'attention_score': float(attention_scores[pos]) if attention_scores is not None else None,
+                'redundancy_score': float(redundancy_scores[pos]) if redundancy_scores is not None else None,
+            }
+
+            all_tokens.append(token_info)
+            if pos in retained_positions:
+                retained_tokens.append(token_info)
+            else:
+                evicted_tokens.append(token_info)
+
+        # Create log entry for this eviction step
+        log_entry = {
+            'sample_id': self.current_sample_id,
+            'eviction_step': len(self.qualitative_data),  # Track which eviction step this is
+            'kv_len': kv_len,
+            'cache_budget': self.cache_budget,
+            'lambda': self.lam,
+            'n_hash_buckets': self.n_hash_buckets,
+            'method': 'RKV' if self.lam == 1.0 else ('RKV-LSH' if self.lam == 0.0 else f'Hybrid(λ={self.lam})'),
+
+            # All tokens with their status
+            'all_tokens': all_tokens,
+
+            # Separated lists for easier analysis
+            'retained_tokens': retained_tokens,
+            'evicted_tokens': evicted_tokens,
+
+            # Summary statistics
+            'num_total': len(all_positions),
+            'num_retained': len(retained_tokens),
+            'num_evicted': len(evicted_tokens),
+        }
+
+        self.qualitative_data.append(log_entry)
+
+        # Print summary if verbose
+        if len(self.qualitative_data) <= 3:  # Only print first few
+            print(f"[Qualitative] Sample {self.current_sample_id}, Step {log_entry['eviction_step']}: "
+                  f"Retained {len(retained_tokens)}/{kv_len} tokens")
+
+    def save_qualitative_analysis(self, output_file=None):
+        """
+        Save qualitative analysis data to JSON file.
+
+        Output format:
+        - Each entry represents one eviction step
+        - Contains all tokens with their retention status and scores
+        - Includes separate lists of retained/evicted tokens for easy analysis
+        """
+        if not self.enable_qualitative_analysis:
+            print("[RKV-LSH] Qualitative analysis not enabled, skipping save")
+            return
+
+        if len(self.qualitative_data) == 0:
+            print("[RKV-LSH] No qualitative data collected")
+            return
+
+        if output_file is None:
+            method_name = 'rkv' if self.lam == 1.0 else ('rkvlsh' if self.lam == 0.0 else f'hybrid_lam{self.lam}')
+            output_file = f"token_decisions_{method_name}_budget{self.cache_budget}_buckets{self.n_hash_buckets}.json"
+
+        output_path = os.path.join(self.save_dir, output_file)
+        os.makedirs(self.save_dir, exist_ok=True)
+
+        # Add metadata
+        output_data = {
+            'metadata': {
+                'method': 'RKV' if self.lam == 1.0 else ('RKV-LSH' if self.lam == 0.0 else f'Hybrid(λ={self.lam})'),
+                'lambda': self.lam,
+                'n_hash_buckets': self.n_hash_buckets,
+                'cache_budget': self.cache_budget,
+                'total_samples': self.current_sample_id + 1,
+                'total_eviction_steps': len(self.qualitative_data),
+            },
+            'eviction_steps': self.qualitative_data
+        }
+
+        with open(output_path, 'w') as f:
+            json.dump(output_data, f, indent=2)
+
+        print(f"[RKV-LSH] Qualitative analysis saved to: {output_path}")
+        print(f"  - Total samples: {self.current_sample_id + 1}")
+        print(f"  - Total eviction steps: {len(self.qualitative_data)}")
+
+        # Also save a human-readable summary
+        self._save_qualitative_summary(output_path.replace('.json', '_summary.txt'))
+
+    def _save_qualitative_summary(self, summary_file):
+        """
+        Generate and save a human-readable summary.
+
+        Shows examples of retained vs evicted tokens to help identify:
+        - What kinds of tokens this method keeps
+        - What kinds of tokens this method drops
+
+        Decodes token IDs to text for readability.
+        """
+        if self.tokenizer is None:
+            print("[RKV-LSH] Cannot generate summary without tokenizer")
+            return
+
+        with open(summary_file, 'w') as f:
+            method_name = 'RKV' if self.lam == 1.0 else ('RKV-LSH' if self.lam == 0.0 else f'Hybrid(λ={self.lam})')
+
+            f.write("=" * 80 + "\n")
+            f.write(f"Token Retention/Eviction Analysis: {method_name}\n")
+            f.write("=" * 80 + "\n\n")
+            f.write(f"Method: {method_name}\n")
+            f.write(f"Lambda: {self.lam}\n")
+            f.write(f"N Hash Buckets: {self.n_hash_buckets}\n")
+            f.write(f"Cache Budget: {self.cache_budget}\n")
+            f.write(f"Total Eviction Steps: {len(self.qualitative_data)}\n\n")
+
+            # Show first few eviction steps in detail
+            for i, entry in enumerate(self.qualitative_data[:5], 1):
+                f.write("\n" + "=" * 80 + "\n")
+                f.write(f"Eviction Step {i}: Sample {entry['sample_id']}, Step {entry['eviction_step']}\n")
+                f.write("=" * 80 + "\n\n")
+                f.write(f"Total tokens: {entry['num_total']}\n")
+                f.write(f"Retained: {entry['num_retained']}\n")
+                f.write(f"Evicted: {entry['num_evicted']}\n\n")
+
+                # Sort retained by score (highest first)
+                retained = sorted(entry['retained_tokens'], key=lambda x: x['final_score'], reverse=True)
+                # Sort evicted by score (lowest first)
+                evicted = sorted(entry['evicted_tokens'], key=lambda x: x['final_score'])
+
+                # Show examples of RETAINED tokens
+                f.write("-" * 80 + "\n")
+                f.write("RETAINED TOKENS (Top 15 by score):\n")
+                f.write("-" * 80 + "\n")
+                for token in retained[:15]:
+                    # Decode token ID to text
+                    token_text = self.tokenizer.decode([token['token_id']], skip_special_tokens=False) if token['token_id'] is not None else "<UNK>"
+                    f.write(f"[Pos {token['position']:4d}] ID:{token['token_id']:6d} '{token_text[:30]:<30}' | Score: {token['final_score']:.4f}")
+                    if token['attention_score'] is not None:
+                        f.write(f" | Attn: {token['attention_score']:.4f}, Red: {token['redundancy_score']:.4f}")
+                    f.write("\n")
+
+                # Show examples of EVICTED tokens
+                f.write("\n" + "-" * 80 + "\n")
+                f.write("EVICTED TOKENS (Top 15 by score - these had lowest scores):\n")
+                f.write("-" * 80 + "\n")
+                for token in evicted[:15]:
+                    # Decode token ID to text
+                    token_text = self.tokenizer.decode([token['token_id']], skip_special_tokens=False) if token['token_id'] is not None else "<UNK>"
+                    f.write(f"[Pos {token['position']:4d}] ID:{token['token_id']:6d} '{token_text[:30]:<30}' | Score: {token['final_score']:.4f}")
+                    if token['attention_score'] is not None:
+                        f.write(f" | Attn: {token['attention_score']:.4f}, Red: {token['redundancy_score']:.4f}")
+                    f.write("\n")
+
+            # Overall statistics
+            f.write("\n\n" + "=" * 80 + "\n")
+            f.write("Overall Statistics\n")
+            f.write("=" * 80 + "\n")
+            total_retained = sum(entry['num_retained'] for entry in self.qualitative_data)
+            total_evicted = sum(entry['num_evicted'] for entry in self.qualitative_data)
+            f.write(f"Total tokens retained across all steps: {total_retained}\n")
+            f.write(f"Total tokens evicted across all steps: {total_evicted}\n")
+
+        print(f"[RKV-LSH] Summary saved to: {summary_file}")
 
     def save_ranking_data(self, scores, indices, kv_len, is_prefill):
         """Save ranking data for analysis. Only called when track_tokens=True (tokenizer is set)."""
