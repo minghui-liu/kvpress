@@ -1,11 +1,11 @@
 #!/bin/bash
-#SBATCH --job-name=rkvlam0
+#SBATCH --job-name=rkvlsh_qual
 #SBATCH --partition=litian,general
 #SBATCH --mem=32GB
 #SBATCH --gres=gpu:a100:1
 #SBATCH --cpus-per-task=4
 #SBATCH --ntasks=1
-#SBATCH --array=0-15
+#SBATCH --array=0-3
 #SBATCH --output=logs/%x_%A_%a.out
 #SBATCH --error=logs/%x_%A_%a.err
 
@@ -21,6 +21,7 @@ source /home/dixi/.cache/pypoetry/virtualenvs/kvpress-CimsZS3I-py3.10/bin/activa
 # =====================
 export HF_HOME=/net/projects2/litian-lab/dixi/cache/
 export CUDA_LAUNCH_BLOCKING=1
+
 # =====================
 # Paths
 # =====================
@@ -31,23 +32,23 @@ mkdir -p logs "$RESULT_DIR"
 # =====================
 # Sweep settings
 # =====================
-PRESS_NAME="rkv"
+# Test both RKV and RKV-LSH
+PRESS_NAMES=("rkv" "rkvlsh")
 
 MODELS=(
-  "deepseek-ai/DeepSeek-R1-Distill-Llama-8B"
+  "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
   "deepseek-ai/DeepSeek-R1-Distill-Qwen-14B"
 )
 
 DATASETS=(
-  "aime24"
   "math500"
 )
 
-CACHE_BUDGETS=(128 256 512 1024)
-LAMBDA=0
-N_HASH_BUCKETS=8
+CACHE_BUDGETS=(1024)
+LAMBDA=0.1
+N_HASH_BUCKETS=16
 
-NUM_SAMPLES=0
+NUM_SAMPLES=15
 RANDOM_SEED=42
 
 # Max tokens modes to traverse
@@ -56,11 +57,12 @@ MAX_TOKENS_MODES=("separate")
 # =====================
 # Derived sizes
 # =====================
+NUM_PRESS=${#PRESS_NAMES[@]}
 NUM_MODELS=${#MODELS[@]}
 NUM_DATASETS=${#DATASETS[@]}
 NUM_BUDGETS=${#CACHE_BUDGETS[@]}
 NUM_MODES=${#MAX_TOKENS_MODES[@]}
-JOBS_PER_MODE=$((NUM_MODELS * NUM_DATASETS * NUM_BUDGETS))
+JOBS_PER_MODE=$((NUM_PRESS * NUM_MODELS * NUM_DATASETS * NUM_BUDGETS))
 TOTAL=$((NUM_MODES * JOBS_PER_MODE))
 
 TASK_ID=${SLURM_ARRAY_TASK_ID:-0}
@@ -70,17 +72,20 @@ if [[ $TASK_ID -ge $TOTAL ]]; then
 fi
 
 # =====================
-# Map array index → (mode, model, dataset, budget)
+# Map array index → (mode, press, model, dataset, budget)
 # =====================
 mode_idx=$(( TASK_ID / JOBS_PER_MODE ))
 combo=$(( TASK_ID % JOBS_PER_MODE ))
 MAX_TOKENS_MODE=${MAX_TOKENS_MODES[$mode_idx]}
 
-model_idx=$(( combo / (NUM_DATASETS * NUM_BUDGETS) ))
-rem=$(( combo % (NUM_DATASETS * NUM_BUDGETS) ))
-dataset_idx=$(( rem / NUM_BUDGETS ))
-budget_idx=$(( rem % NUM_BUDGETS ))
+press_idx=$(( combo / (NUM_MODELS * NUM_DATASETS * NUM_BUDGETS) ))
+rem=$(( combo % (NUM_MODELS * NUM_DATASETS * NUM_BUDGETS) ))
+model_idx=$(( rem / (NUM_DATASETS * NUM_BUDGETS) ))
+rem2=$(( rem % (NUM_DATASETS * NUM_BUDGETS) ))
+dataset_idx=$(( rem2 / NUM_BUDGETS ))
+budget_idx=$(( rem2 % NUM_BUDGETS ))
 
+PRESS_NAME=${PRESS_NAMES[$press_idx]}
 MODEL_NAME=${MODELS[$model_idx]}
 DATASET=${DATASETS[$dataset_idx]}
 CACHE_BUDGET=${CACHE_BUDGETS[$budget_idx]}
@@ -146,7 +151,7 @@ score_file="${RESULT_DIR}/${DATASET}____${MODEL_FILE}__${PRESS_NAME}__budget${CA
 # Skip logic
 # =====================
 if [[ -f "$score_file" ]]; then
-  echo "Skipping $DATASET @ budget $CACHE_BUDGET (score exists)"
+  echo "Skipping $DATASET @ press=$PRESS_NAME @ budget $CACHE_BUDGET (score exists)"
   exit 0
 fi
 
@@ -157,7 +162,7 @@ fi
 # =====================
 # Run
 # =====================
-echo "Running dataset=$DATASET | model=$MODEL_NAME | budget=$CACHE_BUDGET | max_new_tokens=$MAX_NEW_TOKENS | max_tokens_mode=$MAX_TOKENS_MODE | lambda=$LAMBDA"
+echo "Running dataset=$DATASET | model=$MODEL_NAME | press=$PRESS_NAME | budget=$CACHE_BUDGET | max_new_tokens=$MAX_NEW_TOKENS | max_tokens_mode=$MAX_TOKENS_MODE | lambda=$LAMBDA"
 
 python "$SCRIPT_PATH" \
   --dataset="$DATASET" \
@@ -169,8 +174,9 @@ python "$SCRIPT_PATH" \
   --max_new_tokens="$MAX_NEW_TOKENS" \
   --n_hash_buckets="$N_HASH_BUCKETS" \
   --lam="$LAMBDA" \
-  --track_tokens=false \
+  --track_tokens=true \
+  --enable_qualitative_analysis=true \
   --measure_memory=false \
   --measure_latency=true
 
-echo "Done $DATASET | budget=$CACHE_BUDGET | lambda=$LAMBDA"
+echo "Done $DATASET | press=$PRESS_NAME | budget=$CACHE_BUDGET | lambda=$LAMBDA"
