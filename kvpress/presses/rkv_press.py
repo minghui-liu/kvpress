@@ -3,6 +3,8 @@
 
 
 import math
+import json
+import os
 from dataclasses import dataclass
 
 import torch
@@ -29,7 +31,19 @@ class RKVPress(ScorerPress):
         super().__post_init__()
         self.accumulated_tokens = 0  # Initialize accumulated tokens for compression interval
         self.hidden_size = None  # Will be set based on model type
-        self.acc_hidden_states = None  # Will be initialized when hidden_size is known 
+        self.acc_hidden_states = None  # Will be initialized when hidden_size is known
+
+        # Tokenizer for decoding tokens (will be set during inference)
+        self.tokenizer = None
+        self.input_tokens = None
+
+        # Qualitative analysis mode (same as RKVLSHPress)
+        self.enable_qualitative_analysis = False
+        self.qualitative_data = []
+        self.current_sample_id = 0
+        self.current_sample_data = []
+        self.qualitative_output_file = None
+        self.save_dir = "ranking_analysis" 
 
     @staticmethod
     def compute_window_attention(module, hidden_states, keys, window_size, position_embeddings):
@@ -209,6 +223,9 @@ class RKVPress(ScorerPress):
                     retained_token_ids = [all_token_ids[pos] if pos < len(self.input_tokens) else pos for pos in retained_positions]
                 self.track_generation_step(all_token_ids, retained_token_ids, self.tokenizer)
 
+            # Log qualitative decisions if enabled
+            self.log_qualitative_decisions(indices, kv_len, scores)
+
         # Prune keys and values
         keys = keys.gather(2, indices).contiguous()
         values = values.gather(2, indices).contiguous()
@@ -223,4 +240,286 @@ class RKVPress(ScorerPress):
                 (1, self.compress_interval, self.hidden_size), dtype=torch.bfloat16, device=device
             ) # Reset accumulated hidden states
         return keys, values
+
+    def enable_qualitative_mode(self, output_file=None):
+        """Enable qualitative analysis mode to track token retention decisions."""
+        self.enable_qualitative_analysis = True
+
+        # Set up output file path
+        if output_file is None:
+            output_file = f"token_decisions_rkv_budget{self.cache_budget}.jsonl"
+
+        self.qualitative_output_file = os.path.join(self.save_dir, output_file)
+        os.makedirs(self.save_dir, exist_ok=True)
+
+        # Clear the file if it exists (start fresh)
+        if os.path.exists(self.qualitative_output_file):
+            os.remove(self.qualitative_output_file)
+
+        print(f"[RKV] Qualitative analysis mode enabled")
+        print(f"[RKV] Incremental output will be saved to: {self.qualitative_output_file}")
+
+    def save_current_sample_incremental(self):
+        """Save the current sample's qualitative data incrementally to file."""
+        if not self.enable_qualitative_analysis:
+            return
+
+        if len(self.current_sample_data) == 0:
+            return
+
+        # Create sample entry
+        sample_entry = {
+            'sample_id': self.current_sample_id,
+            'num_eviction_steps': len(self.current_sample_data),
+            'eviction_steps': self.current_sample_data
+        }
+
+        # Append to JSONL file (one JSON object per line)
+        with open(self.qualitative_output_file, 'a') as f:
+            f.write(json.dumps(sample_entry) + '\n')
+
+        print(f"[RKV] Sample {self.current_sample_id} qualitative data saved ({len(self.current_sample_data)} eviction steps)")
+
+        # Keep in main list for summary generation later
+        self.qualitative_data.extend(self.current_sample_data)
+
+        # Clear current sample data to free memory
+        self.current_sample_data = []
+
+    def next_sample(self):
+        """Mark the start of a new sample for qualitative analysis."""
+        # Save current sample data before moving to next
+        if self.enable_qualitative_analysis:
+            self.save_current_sample_incremental()
+
+        self.current_sample_id += 1
+
+    def set_tokenizer_and_tokens(self, tokenizer, input_tokens):
+        """Set tokenizer and input tokens for text decoding."""
+        self.tokenizer = tokenizer
+        self.input_tokens = input_tokens
+
+    def log_qualitative_decisions(self, indices, kv_len, scores):
+        """
+        Log detailed token retention/eviction decisions.
+
+        For each eviction step, logs:
+        - All tokens in the cache (position, text, token_id)
+        - Which tokens were retained vs evicted
+        - Attention + redundancy scores
+
+        This allows analysis of what kinds of tokens RKV drops.
+        """
+        if not self.enable_qualitative_analysis or self.tokenizer is None:
+            return
+
+        # Get all token IDs in the current cache
+        if kv_len <= len(self.input_tokens):
+            all_token_ids = self.input_tokens[:kv_len].cpu().tolist()
+        else:
+            all_token_ids = self.input_tokens.cpu().tolist() + list(range(len(self.input_tokens), kv_len))
+
+        # Get which positions were retained (kept in cache)
+        retained_positions = set(indices[0, 0, :, 0].cpu().tolist())
+        all_positions = list(range(kv_len))
+
+        # Get scores (excluding window which is always kept)
+        final_scores = scores[0, 0, :-self.window_size].detach().cpu().numpy()
+
+        # Build detailed token list (JSON only stores IDs, not text to keep file small)
+        all_tokens = []
+        retained_tokens = []
+        evicted_tokens = []
+
+        # Track repetitive/filler tokens of interest
+        repetitive_keywords = {'wait', 'so', 'but'}
+        repetitive_tokens_all = []
+        repetitive_tokens_retained = []
+        repetitive_tokens_evicted = []
+
+        for pos in all_positions:
+            token_id = all_token_ids[pos] if pos < len(all_token_ids) else None
+
+            # Decode token to check if it's a repetitive keyword
+            if token_id is not None:
+                token_text = self.tokenizer.decode([token_id], skip_special_tokens=False).strip().lower()
+                is_repetitive = token_text in repetitive_keywords
+            else:
+                is_repetitive = False
+
+            token_info = {
+                'position': pos,
+                'token_id': token_id,
+                'retained': pos in retained_positions,
+                'final_score': float(final_scores[pos]),
+                'is_repetitive_keyword': is_repetitive,  # Flag for wait/so/but
+            }
+
+            all_tokens.append(token_info)
+            if is_repetitive:
+                repetitive_tokens_all.append(token_info)
+
+            if pos in retained_positions:
+                retained_tokens.append(token_info)
+                if is_repetitive:
+                    repetitive_tokens_retained.append(token_info)
+            else:
+                evicted_tokens.append(token_info)
+                if is_repetitive:
+                    repetitive_tokens_evicted.append(token_info)
+
+        # Calculate repetitive keyword densities
+        num_total = len(all_positions)
+        repetitive_density_all = len(repetitive_tokens_all) / num_total if num_total > 0 else 0
+        repetitive_density_retained = len(repetitive_tokens_retained) / len(retained_tokens) if len(retained_tokens) > 0 else 0
+        repetitive_density_evicted = len(repetitive_tokens_evicted) / len(evicted_tokens) if len(evicted_tokens) > 0 else 0
+
+        # Create log entry for this eviction step
+        log_entry = {
+            'sample_id': self.current_sample_id,
+            'eviction_step': len(self.current_sample_data),  # Track which eviction step within this sample
+            'kv_len': kv_len,
+            'cache_budget': self.cache_budget,
+            'method': 'RKV',
+
+            # All tokens with their status
+            'all_tokens': all_tokens,
+
+            # Separated lists for easier analysis
+            'retained_tokens': retained_tokens,
+            'evicted_tokens': evicted_tokens,
+
+            # Summary statistics
+            'num_total': num_total,
+            'num_retained': len(retained_tokens),
+            'num_evicted': len(evicted_tokens),
+
+            # Repetitive keyword tracking (wait/so/but)
+            'repetitive_keywords_tracked': list(repetitive_keywords),
+            'num_repetitive_all': len(repetitive_tokens_all),
+            'num_repetitive_retained': len(repetitive_tokens_retained),
+            'num_repetitive_evicted': len(repetitive_tokens_evicted),
+            'repetitive_density_all': repetitive_density_all,
+            'repetitive_density_retained': repetitive_density_retained,
+            'repetitive_density_evicted': repetitive_density_evicted,
+        }
+
+        # Append to current sample data (will be saved incrementally)
+        self.current_sample_data.append(log_entry)
+
+        # Print summary if verbose (only for first sample and first few steps)
+        if self.current_sample_id == 0 and len(self.current_sample_data) <= 3:  # Only print first few
+            print(f"[Qualitative] Sample {self.current_sample_id}, Step {log_entry['eviction_step']}: "
+                  f"Retained {len(retained_tokens)}/{kv_len} tokens")
+
+    def save_qualitative_analysis(self):
+        """
+        Generate final summary file after incremental saves are complete.
+
+        The detailed data has already been saved incrementally to JSONL file.
+        This method generates a human-readable summary.
+        """
+        if not self.enable_qualitative_analysis:
+            print("[RKV] Qualitative analysis not enabled, skipping save")
+            return
+
+        if len(self.qualitative_data) == 0:
+            print("[RKV] No qualitative data collected")
+            return
+
+        print(f"[RKV] Qualitative analysis complete:")
+        print(f"  - Total samples: {self.current_sample_id + 1}")
+        print(f"  - Total eviction steps: {len(self.qualitative_data)}")
+        print(f"  - Incremental data saved to: {self.qualitative_output_file}")
+
+        # Generate human-readable summary
+        summary_path = self.qualitative_output_file.replace('.jsonl', '_summary.txt')
+        self._save_qualitative_summary(summary_path)
+        print(f"  - Summary saved to: {summary_path}")
+
+    def _save_qualitative_summary(self, summary_file):
+        """
+        Generate and save a human-readable summary.
+
+        Shows examples of retained vs evicted tokens to help identify:
+        - What kinds of tokens RKV keeps
+        - What kinds of tokens RKV drops
+
+        Decodes token IDs to text for readability.
+        """
+        if self.tokenizer is None:
+            print("[RKV] Cannot generate summary without tokenizer")
+            return
+
+        with open(summary_file, 'w') as f:
+            f.write("=" * 80 + "\n")
+            f.write(f"Token Retention/Eviction Analysis: RKV\n")
+            f.write("=" * 80 + "\n\n")
+            f.write(f"Method: RKV (Attention + Redundancy via Cosine Similarity)\n")
+            f.write(f"Cache Budget: {self.cache_budget}\n")
+            f.write(f"Total Eviction Steps: {len(self.qualitative_data)}\n\n")
+
+            # Show first few eviction steps in detail
+            for i, entry in enumerate(self.qualitative_data[:5], 1):
+                f.write("\n" + "=" * 80 + "\n")
+                f.write(f"Eviction Step {i}: Sample {entry['sample_id']}, Step {entry['eviction_step']}\n")
+                f.write("=" * 80 + "\n\n")
+                f.write(f"Total tokens: {entry['num_total']}\n")
+                f.write(f"Retained: {entry['num_retained']}\n")
+                f.write(f"Evicted: {entry['num_evicted']}\n\n")
+
+                # Show repetitive keyword statistics
+                f.write(f"Repetitive Keywords Tracked: {entry.get('repetitive_keywords_tracked', [])}\n")
+                f.write(f"Repetitive tokens in all: {entry.get('num_repetitive_all', 0)} "
+                       f"({entry.get('repetitive_density_all', 0):.2%})\n")
+                f.write(f"Repetitive tokens retained: {entry.get('num_repetitive_retained', 0)} "
+                       f"({entry.get('repetitive_density_retained', 0):.2%})\n")
+                f.write(f"Repetitive tokens evicted: {entry.get('num_repetitive_evicted', 0)} "
+                       f"({entry.get('repetitive_density_evicted', 0):.2%})\n\n")
+
+                # Sort retained by score (highest first)
+                retained = sorted(entry['retained_tokens'], key=lambda x: x['final_score'], reverse=True)
+                # Sort evicted by score (lowest first)
+                evicted = sorted(entry['evicted_tokens'], key=lambda x: x['final_score'])
+
+                # Show examples of RETAINED tokens
+                f.write("-" * 80 + "\n")
+                f.write("RETAINED TOKENS (Top 15 by score):\n")
+                f.write("-" * 80 + "\n")
+                for token in retained[:15]:
+                    # Decode token ID to text
+                    token_text = self.tokenizer.decode([token['token_id']], skip_special_tokens=False) if token['token_id'] is not None else "<UNK>"
+                    f.write(f"[Pos {token['position']:4d}] ID:{token['token_id']:6d} '{token_text[:30]:<30}' | Score: {token['final_score']:.4f}\n")
+
+                # Show examples of EVICTED tokens
+                f.write("\n" + "-" * 80 + "\n")
+                f.write("EVICTED TOKENS (Top 15 by score - these had lowest scores):\n")
+                f.write("-" * 80 + "\n")
+                for token in evicted[:15]:
+                    # Decode token ID to text
+                    token_text = self.tokenizer.decode([token['token_id']], skip_special_tokens=False) if token['token_id'] is not None else "<UNK>"
+                    f.write(f"[Pos {token['position']:4d}] ID:{token['token_id']:6d} '{token_text[:30]:<30}' | Score: {token['final_score']:.4f}\n")
+
+            # Overall statistics
+            f.write("\n\n" + "=" * 80 + "\n")
+            f.write("Overall Statistics\n")
+            f.write("=" * 80 + "\n")
+            total_retained = sum(entry['num_retained'] for entry in self.qualitative_data)
+            total_evicted = sum(entry['num_evicted'] for entry in self.qualitative_data)
+            total_repetitive_all = sum(entry.get('num_repetitive_all', 0) for entry in self.qualitative_data)
+            total_repetitive_retained = sum(entry.get('num_repetitive_retained', 0) for entry in self.qualitative_data)
+            total_repetitive_evicted = sum(entry.get('num_repetitive_evicted', 0) for entry in self.qualitative_data)
+
+            f.write(f"Total tokens retained: {total_retained}\n")
+            f.write(f"Total tokens evicted: {total_evicted}\n\n")
+
+            f.write(f"Repetitive keyword (wait/so/but) statistics:\n")
+            f.write(f"  Total repetitive tokens: {total_repetitive_all}\n")
+            f.write(f"  Repetitive tokens retained: {total_repetitive_retained} "
+                   f"({total_repetitive_retained/total_retained:.2%} of retained)\n")
+            f.write(f"  Repetitive tokens evicted: {total_repetitive_evicted} "
+                   f"({total_repetitive_evicted/total_evicted:.2%} of evicted)\n")
+            f.write(f"\nThis shows how effectively RKV identifies and drops repetitive filler words.\n")
+
+        print(f"[RKV] Summary saved to: {summary_file}")
 

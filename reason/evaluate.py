@@ -294,9 +294,12 @@ def evaluate(
             # Enable bucket tracking if requested
             if track_buckets:
                 press.enable_bucket_tracking()
-            # Enable qualitative analysis if requested
-            if enable_qualitative_analysis:
+
+        # Enable qualitative analysis for both RKV and RKV-LSH
+        if (press_name in ["rkv", "rkvlsh"]) and press is not None and enable_qualitative_analysis:
+            if hasattr(press, 'enable_qualitative_mode'):
                 press.enable_qualitative_mode()
+                print(f"[{press_name.upper()}] Qualitative analysis enabled")
 
         # Load model and tokenizer
         # H2O press requires output_attentions=True and attn_implementation="eager"
@@ -741,8 +744,9 @@ def evaluate(
 
             # Save current sample qualitative data and prepare for next sample
             # next_sample() will automatically save the current sample incrementally
-            if enable_qualitative_analysis and press_name == "rkvlsh" and press is not None:
-                press.next_sample()
+            if enable_qualitative_analysis and press_name in ["rkv", "rkvlsh"] and press is not None:
+                if hasattr(press, 'next_sample'):
+                    press.next_sample()
 
             print(f"✅ [{i+1}/{len(ds)}] Saved result for question {i+1} to {save_filename.name} (Memory: {memory_usage:.2f} GB)")
             
@@ -775,12 +779,14 @@ def evaluate(
                 print(f"   🧹 Aggressive memory cleanup after {i+1} samples")
 
         # Save qualitative analysis data after all samples are processed
-        if enable_qualitative_analysis and press_name == "rkvlsh" and press is not None:
+        if enable_qualitative_analysis and press_name in ["rkv", "rkvlsh"] and press is not None:
             # Save the last sample's data (since next_sample() is only called between samples)
-            press.save_current_sample_incremental()
+            if hasattr(press, 'save_current_sample_incremental'):
+                press.save_current_sample_incremental()
             # Generate the final summary file
-            press.save_qualitative_analysis()
-            print(f"✅ Qualitative analysis complete - check {press.qualitative_output_file}")
+            if hasattr(press, 'save_qualitative_analysis'):
+                press.save_qualitative_analysis()
+                print(f"✅ Qualitative analysis complete - check {press.qualitative_output_file}")
 
         print(f"\n✅ All results saved to {save_filename}")
     # end of the if save_filename.exists()
@@ -798,6 +804,10 @@ def evaluate(
     # Add average compression ratio
     avg_compression = sum([obj["compression_ratio"] for obj in save_obj]) / len(save_obj)
     metrics["avg_compression"] = avg_compression
+
+    # Add actual output token counts (new tokens generated, not total processed)
+    metrics["total_output_tokens_generated"] = sum([obj["output_token_count"] for obj in save_obj])
+    metrics["avg_output_tokens_generated_per_sample"] = metrics["total_output_tokens_generated"] / len(save_obj) if len(save_obj) > 0 else 0
     
     # Add memory metrics if measured
     if measure_memory and save_obj:
@@ -833,7 +843,11 @@ def evaluate(
         
         metrics["total_prefill_tokens"] = sum([obj["total_prefill_tokens"] for obj in save_obj])
         metrics["total_decoding_tokens"] = sum([obj["total_decoding_tokens"] for obj in save_obj])
-    
+
+        # Add average token counts per sample
+        metrics["avg_prefill_tokens_per_sample"] = metrics["total_prefill_tokens"] / len(save_obj) if len(save_obj) > 0 else 0
+        metrics["avg_decoding_tokens_per_sample"] = metrics["total_decoding_tokens"] / len(save_obj) if len(save_obj) > 0 else 0
+
     metrics["num_samples"] = len(save_obj)
     metrics["dataset"] = dataset
     metrics["data_split"] = data_split
