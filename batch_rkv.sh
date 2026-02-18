@@ -5,7 +5,7 @@
 #SBATCH --gres=gpu:a100:1
 #SBATCH --cpus-per-task=4
 #SBATCH --ntasks=1
-#SBATCH --array=1-3
+#SBATCH --array=2-3
 #SBATCH --output=logs/%x_%A_%a.out
 #SBATCH --error=logs/%x_%A_%a.err
 
@@ -46,7 +46,7 @@ DATASETS=(
 
 CACHE_BUDGETS=(1024)
 LAMBDA=0.1
-N_HASH_BUCKETS=16
+N_HASH_BUCKETS=8
 
 NUM_SAMPLES=15
 RANDOM_SEED=42
