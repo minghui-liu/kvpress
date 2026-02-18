@@ -330,7 +330,7 @@ class RKVPress(ScorerPress):
 
         # Get scores (excluding window which is always kept)
         # scores from score() is padded to kv_len; slice off window padding
-        final_scores = scores[0, 0, :-self.window_size].detach().cpu().numpy()
+        final_scores = scores[0, 0, :-self.window_size].detach().cpu().float().numpy()
         num_scored = len(final_scores)  # kv_len - window_size
 
         # Build detailed token list (JSON only stores IDs, not text to keep file small)

@@ -607,9 +607,9 @@ class RKVLSHPress(ScorerPress):
 
         # Get scores for non-window tokens
         # _last_final_scores already has kv_len - window_size elements (stored before padding in score())
-        final_scores = self._last_final_scores[0, 0].numpy()
-        attention_scores = self._last_attention_scores[0, 0].numpy() if self._last_attention_scores is not None else None
-        redundancy_scores = self._last_redundancy_scores[0, 0].numpy() if self._last_redundancy_scores is not None else None
+        final_scores = self._last_final_scores[0, 0].float().numpy()
+        attention_scores = self._last_attention_scores[0, 0].float().numpy() if self._last_attention_scores is not None else None
+        redundancy_scores = self._last_redundancy_scores[0, 0].float().numpy() if self._last_redundancy_scores is not None else None
         num_scored = len(final_scores)  # kv_len - window_size
 
         # Build detailed token list (JSON only stores IDs, not text to keep file small)
