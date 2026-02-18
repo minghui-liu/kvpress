@@ -605,10 +605,12 @@ class RKVLSHPress(ScorerPress):
         retained_positions = set(indices[0, 0, :, 0].cpu().tolist())
         all_positions = list(range(kv_len))
 
-        # Get scores (excluding window which is always kept)
-        final_scores = self._last_final_scores[0, 0, :-self.window_size].numpy()
-        attention_scores = self._last_attention_scores[0, 0, :].numpy() if self._last_attention_scores is not None else None
-        redundancy_scores = self._last_redundancy_scores[0, 0, :].numpy() if self._last_redundancy_scores is not None else None
+        # Get scores for non-window tokens
+        # _last_final_scores already has kv_len - window_size elements (stored before padding in score())
+        final_scores = self._last_final_scores[0, 0].numpy()
+        attention_scores = self._last_attention_scores[0, 0].numpy() if self._last_attention_scores is not None else None
+        redundancy_scores = self._last_redundancy_scores[0, 0].numpy() if self._last_redundancy_scores is not None else None
+        num_scored = len(final_scores)  # kv_len - window_size
 
         # Build detailed token list (JSON only stores IDs, not text to keep file small)
         all_tokens = []
@@ -631,13 +633,16 @@ class RKVLSHPress(ScorerPress):
             else:
                 is_repetitive = False
 
+            # Window positions (pos >= num_scored) are always retained and have no scores
+            in_window = pos >= num_scored
             token_info = {
                 'position': pos,
                 'token_id': token_id,
                 'retained': pos in retained_positions,
-                'final_score': float(final_scores[pos]),
-                'attention_score': float(attention_scores[pos]) if attention_scores is not None else None,
-                'redundancy_score': float(redundancy_scores[pos]) if redundancy_scores is not None else None,
+                'in_window': in_window,
+                'final_score': float(final_scores[pos]) if not in_window else None,
+                'attention_score': float(attention_scores[pos]) if (attention_scores is not None and not in_window) else None,
+                'redundancy_score': float(redundancy_scores[pos]) if (redundancy_scores is not None and not in_window) else None,
                 'is_repetitive_keyword': is_repetitive,  # Flag for wait/so/but
             }
 

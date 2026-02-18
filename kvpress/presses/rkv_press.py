@@ -239,6 +239,11 @@ class RKVPress(ScorerPress):
             self.acc_hidden_states = torch.zeros(
                 (1, self.compress_interval, self.hidden_size), dtype=torch.bfloat16, device=device
             ) # Reset accumulated hidden states
+
+        # Save ranking data ONLY if tokenizer is set (track_tokens == True)
+        if self.tokenizer is not None:
+            self.save_ranking_data(scores, indices, kv_len, False)
+
         return keys, values
 
     def enable_qualitative_mode(self, output_file=None):
@@ -324,7 +329,9 @@ class RKVPress(ScorerPress):
         all_positions = list(range(kv_len))
 
         # Get scores (excluding window which is always kept)
+        # scores from score() is padded to kv_len; slice off window padding
         final_scores = scores[0, 0, :-self.window_size].detach().cpu().numpy()
+        num_scored = len(final_scores)  # kv_len - window_size
 
         # Build detailed token list (JSON only stores IDs, not text to keep file small)
         all_tokens = []
@@ -347,11 +354,14 @@ class RKVPress(ScorerPress):
             else:
                 is_repetitive = False
 
+            # Window positions (pos >= num_scored) are always retained and have no scores
+            in_window = pos >= num_scored
             token_info = {
                 'position': pos,
                 'token_id': token_id,
                 'retained': pos in retained_positions,
-                'final_score': float(final_scores[pos]),
+                'in_window': in_window,
+                'final_score': float(final_scores[pos]) if not in_window else None,
                 'is_repetitive_keyword': is_repetitive,  # Flag for wait/so/but
             }
 
