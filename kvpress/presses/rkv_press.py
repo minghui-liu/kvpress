@@ -246,13 +246,15 @@ class RKVPress(ScorerPress):
 
         return keys, values
 
-    def enable_qualitative_mode(self, output_file=None):
+    def enable_qualitative_mode(self, output_file=None, model_name=None, press_name=None):
         """Enable qualitative analysis mode to track token retention decisions."""
         self.enable_qualitative_analysis = True
 
         # Set up output file path
         if output_file is None:
-            output_file = f"token_decisions_rkv_budget{self.cache_budget}.jsonl"
+            p = press_name or "rkv"
+            m = f"_{model_name}" if model_name else ""
+            output_file = f"token_decisions_{p}{m}_budget{self.cache_budget}.jsonl"
 
         self.qualitative_output_file = os.path.join(self.save_dir, output_file)
         os.makedirs(self.save_dir, exist_ok=True)

@@ -89,14 +89,15 @@ class RKVLSHPress(ScorerPress):
             return counts_copy
         return None
 
-    def enable_qualitative_mode(self, output_file=None):
+    def enable_qualitative_mode(self, output_file=None, model_name=None, press_name=None):
         """Enable qualitative analysis mode to track token retention decisions."""
         self.enable_qualitative_analysis = True
 
         # Set up output file path
         if output_file is None:
-            method_name = 'rkv' if self.lam == 1.0 else ('rkvlsh' if self.lam == 0.0 else f'hybrid_lam{self.lam}')
-            output_file = f"token_decisions_{method_name}_budget{self.cache_budget}_buckets{self.n_hash_buckets}.jsonl"
+            p = press_name or ('rkv' if self.lam == 1.0 else ('rkvlsh' if self.lam == 0.0 else f'hybrid_lam{self.lam}'))
+            m = f"_{model_name}" if model_name else ""
+            output_file = f"token_decisions_{p}{m}_budget{self.cache_budget}_buckets{self.n_hash_buckets}.jsonl"
 
         self.qualitative_output_file = os.path.join(self.save_dir, output_file)
         os.makedirs(self.save_dir, exist_ok=True)

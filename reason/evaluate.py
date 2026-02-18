@@ -310,7 +310,8 @@ def evaluate(
         # Enable qualitative analysis for both RKV and RKV-LSH
         if (press_name in ["rkv", "rkvlsh"]) and press is not None and enable_qualitative_analysis:
             if hasattr(press, 'enable_qualitative_mode'):
-                press.enable_qualitative_mode()
+                model_short = model_name.replace("/", "--")
+                press.enable_qualitative_mode(model_name=model_short, press_name=press_name)
                 print(f"[{press_name.upper()}] Qualitative analysis enabled")
 
         # Load model and tokenizer
