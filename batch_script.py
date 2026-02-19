@@ -44,7 +44,7 @@ DATASETS = [
 ]
 
 CACHE_BUDGETS = [1024] #1024
-LAMBDA = 0.1  # Match batch.sh (was 0.01)
+LAMBDA = 0.7  # Match batch.sh (was 0.01)
 N_HASH_BUCKETS = 8
 RANDOM_SEED = 42
 
