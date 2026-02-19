@@ -27,7 +27,7 @@ from typing import List, Tuple
 SCRIPT_PATH = "reason/evaluate.py"
 RESULT_DIR = "reason/results"
 
-PRESS_NAMES = ["rkv","rkvlsh"]
+PRESS_NAMES = ["rkvlsh"]
 
 MODELS = [
     # "meta-llama/Llama-3.1-8B-Instruct",  # ML
@@ -44,8 +44,8 @@ DATASETS = [
 ]
 
 CACHE_BUDGETS = [1024] #1024
-LAMBDA = 0.1  # Match batch.sh (was 0.01)
-N_HASH_BUCKETS = 16
+LAMBDA = 0.01  # Match batch.sh (was 0.01)
+N_HASH_BUCKETS = 8
 RANDOM_SEED = 42
 
 # Max tokens modes to traverse (match batch.sh)
@@ -164,10 +164,10 @@ def run_experiment(
         f"--max_new_tokens={max_new_tokens}",
         f"--n_hash_buckets={N_HASH_BUCKETS}",
         f"--lam={LAMBDA}",
-        f"--track_tokens=true",
-        f"--enable_qualitative_analysis=true",
+        f"--track_tokens=false",
+        f"--enable_qualitative_analysis=false",
         f"--measure_memory=false",
-        f"--measure_latency=true",
+        f"--measure_latency=false",
     ]
 
     try:
