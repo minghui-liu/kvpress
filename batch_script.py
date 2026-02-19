@@ -31,7 +31,7 @@ PRESS_NAMES = ["rkvlsh"]
 
 MODELS = [
     # "meta-llama/Llama-3.1-8B-Instruct",  # ML
-    #"deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",  # DQ
+    "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",  
     "deepseek-ai/DeepSeek-R1-Distill-Qwen-14B",  # DQ
     #"nvidia/Llama-3.1-Nemotron-Nano-8B-v1",  # LN
     #"deepseek-ai/DeepSeek-R1-Distill-Llama-8B",  # DL
@@ -44,7 +44,7 @@ DATASETS = [
 ]
 
 CACHE_BUDGETS = [1024] #1024
-LAMBDA = 0.01  # Match batch.sh (was 0.01)
+LAMBDA = 0.1  # Match batch.sh (was 0.01)
 N_HASH_BUCKETS = 8
 RANDOM_SEED = 42
 
