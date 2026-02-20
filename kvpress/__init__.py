@@ -11,6 +11,8 @@ from kvpress.presses.chunkkv_press import ChunkKVPress
 from kvpress.presses.composed_press import ComposedPress
 from kvpress.presses.criticalkv_press import CriticalAdaKVPress, CriticalKVPress
 from kvpress.presses.duo_attention_press import DuoAttentionPress
+from kvpress.presses.evict_press import EvictPress
+from kvpress.presses.attention_cap_press import AttentionCapPress
 from kvpress.presses.expected_attention_press import ExpectedAttentionPress
 from kvpress.presses.key_rerotation_press import KeyRerotationPress
 from kvpress.presses.knorm_press import KnormPress
@@ -55,6 +57,8 @@ __all__ = [
     "KeyRerotationPress",
     "ChunkPress",
     "DuoAttentionPress",
+    "EvictPress",
+    "AttentionCapPress",
     "ChunkKVPress",
     "QFilterPress",
     "PyramidKVPress",

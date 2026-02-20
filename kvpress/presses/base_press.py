@@ -533,7 +533,8 @@ class BasePress:
 
         """
         hidden_states = kwargs["hidden_states"]
-        cache = kwargs["past_key_value"]
+        # Handle both old and new key names for backward compatibility
+        cache = kwargs.get("past_key_value") or kwargs.get("past_key_values")
         q_len = hidden_states.shape[1]
 
         is_prefilling = kwargs["cache_position"][-1] <= q_len

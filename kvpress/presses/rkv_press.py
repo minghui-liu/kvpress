@@ -154,7 +154,7 @@ class RKVPress(ScorerPress):
         redundency = keys_similarity.mean(dim=-1)  # Average over the key dimension
         redundency = F.softmax(redundency, dim=-1, dtype=torch.float32).to(scores.dtype)
  
-        lam = 0.1
+        lam = 0
         scores = lam * scores + (1 - lam) * redundency
 
         # Add back the observation window. Use max score to make sure the window is not pruned.

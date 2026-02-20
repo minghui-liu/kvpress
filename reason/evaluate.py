@@ -28,9 +28,41 @@ from commonsenseqa import commonsenseqa_formatter, commonsenseqa_scorer
 from math500 import math500_formatter, math500_scorer
 from drop import drop_formatter, drop_scorer
 from reclor import reclor_formatter, reclor_scorer
+from reason.ifeval import ifeval_formatter, ifeval_scorer
 from keyword_tracker import extract_keywords, tokenize_keywords, track_token_retention
 
+
+def ruler_formatter(sample):
+    """Format ruler dataset sample."""
+    context = sample["context"]
+    question = sample["question"]
+    input_text = f"{context}\n\nQuestion: {question}\n\nAnswer:"
+    gt_answer = sample["answer"][0] if isinstance(sample["answer"], list) else sample["answer"]
+    return input_text, str(gt_answer)
+
+
+def ruler_scorer(predictions, references):
+    """Score ruler predictions."""
+    correct = 0
+    total = len(predictions)
+
+    for pred, ref in zip(predictions, references):
+        # ref is a list, check if any reference answer is in the prediction
+        if isinstance(ref, list):
+            ref_answers = [str(r) for r in ref]
+        else:
+            ref_answers = [str(ref)]
+
+        pred_str = str(pred).strip()
+        if any(ref_answer in pred_str for ref_answer in ref_answers):
+            correct += 1
+
+    return correct / total if total > 0 else 0
+
+
 from kvpress import (
+    EvictPress,
+    AttentionCapPress,
     KnormPress,
     RandomPress,
     StreamingLLMPress,
@@ -57,6 +89,8 @@ DATASET_DICT = {
     "math500": ("HuggingFaceH4/MATH-500", None, "test"),
     "drop": ("ucinlp/drop", None, "validation"),
     "reclor": ("metaeval/reclor", None, "validation"),
+    "ifeval": ("google/IFEval", None, "train"),
+    "ruler": ("simonjegou/ruler", "4096", "test"),
 }
 
 FORMATTER_DICT = {
@@ -71,6 +105,8 @@ FORMATTER_DICT = {
     "math500": math500_formatter,
     "drop": drop_formatter,
     "reclor": reclor_formatter,
+    "ifeval": ifeval_formatter,
+    "ruler": ruler_formatter,
 }
 
 EXTRACTOR_DICT = {
@@ -85,6 +121,8 @@ EXTRACTOR_DICT = {
     "math500": default_extractor,
     "drop": default_extractor,
     "reclor": default_extractor,
+    "ifeval": default_extractor,
+    "ruler": default_extractor,
 }
 
 SCORER_DICT = {
@@ -99,9 +137,13 @@ SCORER_DICT = {
     "math500": math500_scorer,
     "drop": drop_scorer,
     "reclor": reclor_scorer,
+    "ifeval": ifeval_scorer,
+    "ruler": ruler_scorer,
 }
 
 PRESS_DICT = {
+    "evict": EvictPress(),
+    "attention_cap": AttentionCapPress(),
     "knorm": KnormPress(),
     "h2o": H2OPress(),
     "random": RandomPress(),
@@ -124,7 +166,7 @@ def output_attentions(press: BasePress, latency: bool) -> bool:
     if not latency:
         return True
 
-    if isinstance(press, H2OPress):
+    if isinstance(press, (EvictPress, H2OPress, AttentionCapPress)):
         return True
     if isinstance(press, (KeyRerotationPress, PerLayerCompressionPress)) and isinstance(
         press.press, H2OPress
@@ -523,7 +565,8 @@ def evaluate(
             # Run generation
             try:
                 pred_start = inputs["input_ids"].shape[1]
-                stopping = StoppingCriteriaList([StopOnRepetition(prompt_len=pred_start, min_repeat=5, ngram_min=2, ngram_max=10, window=200, tokenizer=tokenizer)])
+                stopping = StoppingCriteriaList([StopOnRepetition(prompt_len=pred_start, min_repeat=10, ngram_min=2, ngram_max=10, window=200, tokenizer=tokenizer)])
+                stopping = None
                 if do_sampling:
                     with press(model) if press is not None else contextlib.nullcontext():
                         outputs = model.generate(
@@ -556,12 +599,17 @@ def evaluate(
                             return_dict_in_generate=needs_attn,
                         )
 
+                # Capture attention weights if available
+                attentions = None
                 if isinstance(outputs, dict):
+                    attentions = outputs.get("attentions")
                     outputs = outputs["sequences"]
             except KeyboardInterrupt:
                 _dump_partial_results()
                 pbar.close()
-                return
+                print(f"\n[EARLY EXIT] Processed {len(save_objs)}/{len(ds)} samples. Calculating partial accuracy...")
+                # Continue to scoring with partial results
+                break
 
             pred_start = inputs["input_ids"].shape[1]
             response = tokenizer.decode(outputs[0][pred_start:], skip_special_tokens=True)
@@ -600,6 +648,20 @@ def evaluate(
                     "compression_ratio": actual_compression,
                 }
             )
+
+            # Store attentions if captured and tracking is enabled
+            if track_tokens and attentions is not None:
+                # Convert attentions to a more manageable format for storage
+                # attentions shape: [num_layers, batch_size, num_heads, seq_len, seq_len]
+                processed_attentions = []
+                for layer_idx, layer_attentions in enumerate(attentions):
+                    # Average across heads for this layer
+                    head_avg = layer_attentions[0].mean(dim=0)  # [seq_len, seq_len]
+                    # Only keep the last row (attention to the last generated token)
+                    last_token_attention = head_avg[-1, :]  # [seq_len]
+                    processed_attentions.append(last_token_attention.tolist())
+
+                save_obj["attentions"] = processed_attentions
 
             if latency:
                 save_obj.update(timing_metrics)
@@ -694,12 +756,22 @@ def evaluate(
     # load the results and evaluate the metrics
     with open(str(save_filename), "r") as f:
         save_obj = [json.loads(line) for line in f.readlines()]
-    extracted_answers = [obj["extracted_answer"] for obj in save_obj]
+    # For IFEval, use the full response; for other datasets, use extracted_answer
+    if dataset == "ifeval":
+        extracted_answers = [obj["response"] for obj in save_obj]
+    else:
+        extracted_answers = [obj["extracted_answer"] for obj in save_obj]
     gt_answers = [obj["gt_answer"] for obj in save_obj]
 
     # Calculate metrics
     scorer = SCORER_DICT[dataset]
-    metrics = scorer(extracted_answers, gt_answers)
+    if dataset == "ifeval":
+        # IFEval needs additional instruction data
+        instruction_lists = [obj["instruction_id_list"] for obj in save_obj]
+        kwargs_lists = [obj["kwargs"] for obj in save_obj]
+        metrics = scorer(extracted_answers, gt_answers, instruction_lists, kwargs_lists)
+    else:
+        metrics = scorer(extracted_answers, gt_answers)
 
     # Add average compression ratio
     avg_compression = sum([obj["compression_ratio"] for obj in save_obj]) / len(save_obj)
