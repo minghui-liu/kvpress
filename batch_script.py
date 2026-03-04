@@ -32,7 +32,7 @@ PRESS_NAMES = ["rkvlsh"]
 MODELS = [
     # "meta-llama/Llama-3.1-8B-Instruct",  # ML
     "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",  
-    "deepseek-ai/DeepSeek-R1-Distill-Qwen-14B",  # DQ
+    # "deepseek-ai/DeepSeek-R1-Distill-Qwen-14B",  # DQ
     #"nvidia/Llama-3.1-Nemotron-Nano-8B-v1",  # LN
     #"deepseek-ai/DeepSeek-R1-Distill-Llama-8B",  # DL
 ]
@@ -44,8 +44,8 @@ DATASETS = [
 ]
 
 CACHE_BUDGETS = [1024] #1024
-LAMBDA = 0.7  # Match batch.sh (was 0.01)
-N_HASH_BUCKETS = 8
+LAMBDA = 0  # Match batch.sh (was 0.01)
+N_HASH_BUCKETS_LIST = [4, 8, 16, 24]
 RANDOM_SEED = 42
 
 # Max tokens modes to traverse (match batch.sh)
@@ -54,7 +54,7 @@ MAX_TOKENS_MODES = ["separate"]
 # Dataset-specific NUM_SAMPLES
 NUM_SAMPLES_MAP = {
     "aime24": 0,  # Match batch.sh
-    "math500": 500,
+    "math500": 100,
     "gsm8k": 100,
 }
 
@@ -90,9 +90,9 @@ def format_lambda(lam: float) -> str:
             return str(lambda_int)
 
 
-def get_experiment_list() -> List[Tuple[str, str, str, int]]:
+def get_experiment_list() -> List[Tuple[str, str, str, int, int]]:
     """
-    Generate list of (press_name, model, dataset, budget) tuples.
+    Generate list of (press_name, model, dataset, budget, n_hash_buckets) tuples.
     Returns all possible experiment combinations.
     """
     experiments = []
@@ -100,7 +100,8 @@ def get_experiment_list() -> List[Tuple[str, str, str, int]]:
         for model in MODELS:
             for dataset in DATASETS:
                 for budget in CACHE_BUDGETS:
-                    experiments.append((press_name, model, dataset, budget))
+                    for n_buckets in N_HASH_BUCKETS_LIST:
+                        experiments.append((press_name, model, dataset, budget, n_buckets))
     return experiments
 
 
@@ -110,6 +111,7 @@ def run_experiment(
     cache_budget: int,
     press_name: str,
     max_tokens_mode: str,
+    n_hash_buckets: int,
 ) -> tuple[bool, float]:
     """
     Run a single experiment.
@@ -125,17 +127,17 @@ def run_experiment(
         f"{RESULT_DIR}/{dataset}____"
         f"{model_file}__{press_name}__"
         f"budget{cache_budget}__"
-        f"hash_bucket{N_HASH_BUCKETS}__"
+        f"hash_bucket{n_hash_buckets}__"
         f"max_new_tokens{max_new_tokens}__"
         f"lam{lambda_sanitized}__"
         f"num_samples{num_samples}__sampling.jsonl"
     )
-    
+
     score_file = (
         f"{RESULT_DIR}/{dataset}____"
         f"{model_file}__{press_name}__"
         f"budget{cache_budget}__"
-        f"hash_bucket{N_HASH_BUCKETS}__"
+        f"hash_bucket{n_hash_buckets}__"
         f"max_new_tokens{max_new_tokens}__"
         f"lam{lambda_sanitized}__"
         f"num_samples{num_samples}__sampling_score.json"
@@ -147,7 +149,7 @@ def run_experiment(
         return True
 
     print(f"\n{'='*70}")
-    print(f"Running: {dataset} | {model_name} | budget {cache_budget}")
+    print(f"Running: {dataset} | {model_name} | budget {cache_budget} | buckets {n_hash_buckets}")
     print(f"Max tokens: {max_new_tokens} | Max tokens mode: {max_tokens_mode} | Press: {press_name}")
     print(f"{'='*70}")
 
@@ -162,7 +164,7 @@ def run_experiment(
         f"--num_samples={num_samples}",
         f"--random_seed={RANDOM_SEED}",
         f"--max_new_tokens={max_new_tokens}",
-        f"--n_hash_buckets={N_HASH_BUCKETS}",
+        f"--n_hash_buckets={n_hash_buckets}",
         f"--lam={LAMBDA}",
         f"--track_tokens=false",
         f"--enable_qualitative_analysis=false",
@@ -235,7 +237,7 @@ Examples:
     
     print(f"Modes to run: {modes_to_run}")
     print(f"Total possible experiments: {total_experiments} ({len(modes_to_run)} modes × {experiments_per_mode} experiments)")
-    print(f"Press methods: {len(PRESS_NAMES)}, Models: {len(MODELS)}, Datasets: {len(DATASETS)}, Budgets: {len(CACHE_BUDGETS)}")
+    print(f"Press methods: {len(PRESS_NAMES)}, Models: {len(MODELS)}, Datasets: {len(DATASETS)}, Budgets: {len(CACHE_BUDGETS)}, Hash buckets: {N_HASH_BUCKETS_LIST}")
 
     # Determine range
     if args.range:
@@ -272,13 +274,13 @@ Examples:
                 continue
             
             max_tokens_mode = modes_to_run[mode_idx]
-            press_name, model, dataset, budget = all_experiments[combo]
-            
-            print(f"\n[{idx}/{len(range_list)}] Task #{task_id} (Mode: {max_tokens_mode}, Press: {press_name})")
-            
-            success, elapsed_time = run_experiment(model, dataset, budget, press_name, max_tokens_mode)
+            press_name, model, dataset, budget, n_buckets = all_experiments[combo]
+
+            print(f"\n[{idx}/{len(range_list)}] Task #{task_id} (Mode: {max_tokens_mode}, Press: {press_name}, Buckets: {n_buckets})")
+
+            success, elapsed_time = run_experiment(model, dataset, budget, press_name, max_tokens_mode, n_buckets)
             total_wall_time += elapsed_time
-            experiment_times.append((press_name, model, dataset, budget, elapsed_time))
+            experiment_times.append((press_name, model, dataset, budget, n_buckets, elapsed_time))
             
             if success:
                 successful += 1
@@ -299,13 +301,13 @@ Examples:
         print(f"\nWall Clock Times:")
         print(f"  Total: {total_wall_time:.2f}s ({total_wall_time/60:.2f} min)")
         print(f"  Average per experiment: {total_wall_time/(successful+failed):.2f}s")
-        print(f"  Min: {min(t[4] for t in experiment_times):.2f}s")
-        print(f"  Max: {max(t[4] for t in experiment_times):.2f}s")
+        print(f"  Min: {min(t[5] for t in experiment_times):.2f}s")
+        print(f"  Max: {max(t[5] for t in experiment_times):.2f}s")
         print(f"\nTop 5 slowest experiments:")
-        sorted_times = sorted(experiment_times, key=lambda x: x[4], reverse=True)
-        for i, (press, model, dataset, budget, elapsed) in enumerate(sorted_times[:5], 1):
+        sorted_times = sorted(experiment_times, key=lambda x: x[5], reverse=True)
+        for i, (press, model, dataset, budget, n_buckets, elapsed) in enumerate(sorted_times[:5], 1):
             model_short = model.split("/")[-1][:20]
-            print(f"  {i}. {press:15} | {model_short:20} | {dataset:10} | budget{budget:4d} | {elapsed:7.2f}s")
+            print(f"  {i}. {press:15} | {model_short:20} | {dataset:10} | budget{budget:4d} | buckets{n_buckets:3d} | {elapsed:7.2f}s")
     print(f"{'='*70}\n")
 
     if failed > 0:
