@@ -1,11 +1,11 @@
 #!/bin/bash
-#SBATCH --job-name=rkslshrkvlam0
+#SBATCH --job-name=large_model
 #SBATCH --partition=litian
-#SBATCH --mem=32GB
-#SBATCH --gres=gpu:a100:1
-#SBATCH --cpus-per-task=8
+#SBATCH --mem=96G
+#SBATCH --gres=gpu:a100:4
+#SBATCH --cpus-per-task=32
 #SBATCH --ntasks=1
-#SBATCH --array=0-15
+#SBATCH --array=0
 #SBATCH --output=logs/%x_%A_%a.out
 #SBATCH --error=logs/%x_%A_%a.err
 
@@ -24,23 +24,22 @@ RESULT_DIR="reason/results"
 mkdir -p logs "$RESULT_DIR"
 
 # Sweep settings
-PRESS_NAME=("rkv" "rkvlsh")
+PRESS_NAME=("rkv" "h2o" "knorm" "snapkv" "streaming_llm")
 MODELS=(
-  # "deepseek-ai/DeepSeek-R1-Distill-Llama-8B"
-  # "deepseek-ai/DeepSeek-R1-Distill-Qwen-14B"
-  "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
+  "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B"
+  "deepseek-ai/DeepSeek-R1-Distill-Llama-70B"
 )
 DATASETS=(
   # "aime24"
   "math500"
-  "gsm8k"
+  # "gsm8k"
 )
 CACHE_BUDGETS=(128 256 512 1024)
 LAMBDA=0
 N_HASH_BUCKETS=8
 
 NUM_SAMPLES=100
-RANDOM_SEED=42
+RANDOM_SEEDS=(24 42 130)
 
 # =====================
 # Derived sizes
@@ -49,7 +48,8 @@ NUM_MODELS=${#MODELS[@]}
 NUM_DATASETS=${#DATASETS[@]}
 NUM_BUDGETS=${#CACHE_BUDGETS[@]}
 NUM_PRESS_METHODS=${#PRESS_NAME[@]}
-TOTAL=$((NUM_MODELS * NUM_DATASETS * NUM_BUDGETS * NUM_PRESS_METHODS))
+NUM_SEEDS=${#RANDOM_SEEDS[@]}
+TOTAL=$((NUM_MODELS * NUM_DATASETS * NUM_BUDGETS * NUM_PRESS_METHODS * NUM_SEEDS))
 
 TASK_ID=${SLURM_ARRAY_TASK_ID:-0}
 if [[ $TASK_ID -ge $TOTAL ]]; then
@@ -57,19 +57,22 @@ if [[ $TASK_ID -ge $TOTAL ]]; then
   exit 1
 fi
 
-# Map array index to (model, dataset, budget, press_method)
+# Map array index to (model, dataset, budget, press_method, seed)
 combo=$TASK_ID
-model_idx=$(( combo / (NUM_DATASETS * NUM_BUDGETS * NUM_PRESS_METHODS) ))
-rem=$(( combo % (NUM_DATASETS * NUM_BUDGETS * NUM_PRESS_METHODS) ))
-dataset_idx=$(( rem / (NUM_BUDGETS * NUM_PRESS_METHODS) ))
-rem=$(( rem % (NUM_BUDGETS * NUM_PRESS_METHODS) ))
-budget_idx=$(( rem / NUM_PRESS_METHODS ))
-press_idx=$(( rem % NUM_PRESS_METHODS ))
+model_idx=$(( combo / (NUM_DATASETS * NUM_BUDGETS * NUM_PRESS_METHODS * NUM_SEEDS) ))
+rem=$(( combo % (NUM_DATASETS * NUM_BUDGETS * NUM_PRESS_METHODS * NUM_SEEDS) ))
+dataset_idx=$(( rem / (NUM_BUDGETS * NUM_PRESS_METHODS * NUM_SEEDS) ))
+rem=$(( rem % (NUM_BUDGETS * NUM_PRESS_METHODS * NUM_SEEDS) ))
+budget_idx=$(( rem / (NUM_PRESS_METHODS * NUM_SEEDS) ))
+rem=$(( rem % (NUM_PRESS_METHODS * NUM_SEEDS) ))
+press_idx=$(( rem / NUM_SEEDS ))
+seed_idx=$(( rem % NUM_SEEDS ))
 
 MODEL_NAME=${MODELS[$model_idx]}
 DATASET=${DATASETS[$dataset_idx]}
 CACHE_BUDGET=${CACHE_BUDGETS[$budget_idx]}
 PRESS_METHOD=${PRESS_NAME[$press_idx]}
+RANDOM_SEED=${RANDOM_SEEDS[$seed_idx]}
 MODEL_FILE=${MODEL_NAME//\//--}
 
 # =====================
@@ -107,8 +110,8 @@ else
   fi
 fi
 
-out_file="${RESULT_DIR}/${DATASET}____${MODEL_FILE}__${PRESS_METHOD}__budget${CACHE_BUDGET}__hash_bucket${N_HASH_BUCKETS}__max_new_tokens${MAX_NEW_TOKENS}__lam${lambda_sanitized}__num_samples${NUM_SAMPLES}__sampling.jsonl"
-score_file="${RESULT_DIR}/${DATASET}____${MODEL_FILE}__${PRESS_METHOD}__budget${CACHE_BUDGET}__hash_bucket${N_HASH_BUCKETS}__max_new_tokens${MAX_NEW_TOKENS}__lam${lambda_sanitized}__num_samples${NUM_SAMPLES}__sampling_score.json"
+out_file="${RESULT_DIR}/${DATASET}____${MODEL_FILE}__${PRESS_METHOD}__budget${CACHE_BUDGET}__hash_bucket${N_HASH_BUCKETS}__max_new_tokens${MAX_NEW_TOKENS}__lam${lambda_sanitized}__num_samples${NUM_SAMPLES}__seed${RANDOM_SEED}__sampling.jsonl"
+score_file="${RESULT_DIR}/${DATASET}____${MODEL_FILE}__${PRESS_METHOD}__budget${CACHE_BUDGET}__hash_bucket${N_HASH_BUCKETS}__max_new_tokens${MAX_NEW_TOKENS}__lam${lambda_sanitized}__num_samples${NUM_SAMPLES}__seed${RANDOM_SEED}__sampling_score.json"
 
 if [[ -f "$score_file" ]]; then
   echo "✅ Skipping $DATASET @ budget $CACHE_BUDGET (score exists: $(basename "$score_file"))"
@@ -119,7 +122,7 @@ if [[ -f "$out_file" ]]; then
   echo "⚠️  Results exist without score: $(basename "$out_file") — rerunning to generate score"
 fi
 
-echo "➡️  Running $DATASET | press=$PRESS_METHOD | budget=$CACHE_BUDGET | lambda=$LAMBDA | model=$MODEL_NAME"
+echo "➡️  Running $DATASET | press=$PRESS_METHOD | budget=$CACHE_BUDGET | lambda=$LAMBDA | seed=$RANDOM_SEED | model=$MODEL_NAME"
 python "$SCRIPT_PATH" \
   --dataset="$DATASET" \
   --model_name="$MODEL_NAME" \

@@ -34,6 +34,12 @@ from commonsenseqa import commonsenseqa_formatter, commonsenseqa_scorer
 from math500 import math500_formatter, math500_scorer
 from drop import drop_formatter, drop_scorer
 from reclor import reclor_formatter, reclor_scorer
+from gpqa import gpqa_formatter, gpqa_extractor, gpqa_scorer
+from gpqa_diamond import (
+    gpqa_diamond_formatter,
+    gpqa_diamond_extractor,
+    gpqa_diamond_scorer,
+)
 
 from kvpress import (
     KnormPress,
@@ -62,6 +68,8 @@ DATASET_DICT = {
     "math500": ("HuggingFaceH4/MATH-500", None, "test"),
     "drop": ("ucinlp/drop", None, "validation"),
     "reclor": ("metaeval/reclor", None, "validation"),
+    "gpqa": ("Idavidrein/gpqa", "gpqa_main", "train"),
+    "gpqa_diamond": ("Idavidrein/gpqa", "gpqa_diamond", "train"),
 }
 
 FORMATTER_DICT = {
@@ -76,6 +84,8 @@ FORMATTER_DICT = {
     "math500": math500_formatter,
     "drop": drop_formatter,
     "reclor": reclor_formatter,
+    "gpqa": gpqa_formatter,
+    "gpqa_diamond": gpqa_diamond_formatter,
 }
 
 EXTRACTOR_DICT = {
@@ -90,6 +100,8 @@ EXTRACTOR_DICT = {
     "math500": default_extractor,
     "drop": default_extractor,
     "reclor": default_extractor,
+    "gpqa": gpqa_extractor,
+    "gpqa_diamond": gpqa_diamond_extractor,
 }
 
 SCORER_DICT = {
@@ -104,6 +116,8 @@ SCORER_DICT = {
     "math500": math500_scorer,
     "drop": drop_scorer,
     "reclor": reclor_scorer,
+    "gpqa": gpqa_scorer,
+    "gpqa_diamond": gpqa_diamond_scorer,
 }
 
 PRESS_DICT = {
@@ -128,6 +142,44 @@ def output_attentions(press: BasePress):
     ):
         return True
     return False
+
+
+def load_reason_dataset(hf_name: str, subset: Optional[str], split: str):
+    """
+    Load a dataset split with robust subset handling.
+
+    `subset` in this codebase is typically a Hugging Face config name (e.g. "main",
+    "gpqa_diamond"). Some legacy datasets may instead expect `data_dir`, so we
+    progressively retry with sensible fallbacks.
+    """
+    if subset is None:
+        return load_dataset(hf_name, split=split)
+
+    load_errors = []
+
+    # 1) Preferred: treat subset as HF config name
+    try:
+        return load_dataset(hf_name, name=subset, split=split)
+    except Exception as exc:
+        load_errors.append(("name", exc))
+
+    # 2) Fallback: treat subset as data directory
+    try:
+        return load_dataset(hf_name, data_dir=subset, split=split)
+    except Exception as exc:
+        load_errors.append(("data_dir", exc))
+
+    # 3) Only if no subset was requested would we use default config.
+    # Since subset is explicitly provided here, fail loudly to avoid
+    # evaluating the wrong dataset/config by accident.
+
+    attempts = ", ".join(mode for mode, _ in load_errors)
+    errors = " | ".join(f"{mode}:{type(err).__name__}: {err}" for mode, err in load_errors)
+    raise RuntimeError(
+        f"Failed to load dataset '{hf_name}' with subset '{subset}' and split '{split}'. "
+        f"Tried [{attempts}]. Details: {errors}. "
+        "If this dataset is gated, accept its terms on Hugging Face and ensure you are logged in."
+    ) from load_errors[-1][1]
 
 def evaluate(
     dataset: str,
@@ -257,6 +309,8 @@ def evaluate(
         save_filename = save_filename.with_name(save_filename.stem + f"__num_samples{num_samples}" + save_filename.suffix)
     elif fraction < 1.0:
         save_filename = save_filename.with_name(save_filename.stem + f"__fraction{fraction:.2f}" + save_filename.suffix)
+    if num_samples > 0 or fraction < 1.0:
+        save_filename = save_filename.with_name(save_filename.stem + f"__seed{random_seed}" + save_filename.suffix)
     if max_context_length is not None:
         save_filename = save_filename.with_name(save_filename.stem + f"__max_context{max_context_length}" + save_filename.suffix)
     if do_sampling:
@@ -279,7 +333,7 @@ def evaluate(
         if save_filename.with_suffix('.step_tracking.json').exists():
             save_filename.with_suffix('.step_tracking.json').unlink()
         # Load datasetf
-        ds = load_dataset(hf_name, data_dir=data_dir, split=data_split)
+        ds = load_reason_dataset(hf_name, data_dir, data_split)
         if num_samples > 0:
             assert num_samples <= len(ds), f"num_samples {num_samples} is larger than the dataset size {len(ds)}"
             ds = ds.shuffle(seed=random_seed).select(range(num_samples))
@@ -328,50 +382,31 @@ def evaluate(
             # This is the recommended approach per SeerAttention documentation
             config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
             tokenizer = AutoTokenizer.from_pretrained(
-                config.base_model, 
+                config.base_model,
                 trust_remote_code=True,
                 padding_side="left",
             )
-            # Load model after tokenizer
             model = SeerDecodingQwen2ForCausalLM.from_pretrained(
-                    model_name,
-                    torch_dtype=torch.bfloat16,
-                        trust_remote_code=True,
-                    seerattn_sparsity_method='token_budget', 
-                    seerattn_token_budget = cache_budget,
-                    **h2o_config
-                )
-            model.to(device)
-        elif "DeepSeek" in model_name or "Llama-3.1" in model_name or "Meta-Llama-3.1" in model_name:
-            # DeepSeek and Llama 3.1 models: Load tokenizer with trust_remote_code
-            # DeepSeek models are based on Llama, so they use Llama tokenizer
-            # Llama 3.1 models also need trust_remote_code for proper tokenizer loading
-            model = AutoModelForCausalLM.from_pretrained(
                 model_name,
-                device_map="auto",
+                torch_dtype=torch.bfloat16,
                 trust_remote_code=True,
-                torch_dtype="auto",
+                seerattn_sparsity_method='token_budget',
+                seerattn_token_budget=cache_budget,
                 **h2o_config
             )
-            # Load tokenizer with trust_remote_code=True and padding_side="left" for generation
+            model.to(device)
+        else:
             tokenizer = AutoTokenizer.from_pretrained(
                 model_name,
                 trust_remote_code=True,
                 padding_side="left",
             )
-        else:
-            # Other models: Standard loading
             model = AutoModelForCausalLM.from_pretrained(
                 model_name,
+                torch_dtype="auto",
                 device_map="auto",
                 trust_remote_code=True,
-                torch_dtype="auto",
                 **h2o_config
-            )
-            tokenizer = AutoTokenizer.from_pretrained(
-                model_name, 
-                trust_remote_code=True,
-                device_map="auto"
             )
         
         # Set pad token to eos token if not already set (required for generation)
