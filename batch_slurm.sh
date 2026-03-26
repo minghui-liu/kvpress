@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=large_model
-#SBATCH --partition=litian
+#SBATCH --partition=litian,general
 #SBATCH --mem=96G
 #SBATCH --gres=gpu:a100:4
 #SBATCH --cpus-per-task=32
