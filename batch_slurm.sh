@@ -5,7 +5,7 @@
 #SBATCH --gres=gpu:a100:4
 #SBATCH --cpus-per-task=16
 #SBATCH --ntasks=1
-#SBATCH --array=1-119
+#SBATCH --array=0-119
 #SBATCH --output=logs/%x_%A_%a.out
 #SBATCH --error=logs/%x_%A_%a.txt
 
@@ -38,7 +38,7 @@ CACHE_BUDGETS=(128 256 512 1024)
 LAMBDA=0
 N_HASH_BUCKETS=8
 
-NUM_SAMPLES=100
+NUM_SAMPLES=50
 RANDOM_SEEDS=(24 42 130)
 
 # =====================
@@ -133,8 +133,8 @@ python "$SCRIPT_PATH" \
   --max_new_tokens="$MAX_NEW_TOKENS" \
   --n_hash_buckets="$N_HASH_BUCKETS" \
   --lam="$LAMBDA" \
-  --track_tokens=true \
+  --track_tokens=false \
   --measure_memory=false \
-  --measure_latency=true
+  --measure_latency=false
 
 echo "✅ Done $DATASET | press=$PRESS_METHOD | budget=$CACHE_BUDGET | lambda=$LAMBDA"
