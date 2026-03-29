@@ -51,6 +51,7 @@ from kvpress import (
     H2OPress,
     SnapKVPress,
     NonePress,
+    TurboQuantPress,
 )
 
 logger = logging.getLogger(__name__)
@@ -131,6 +132,7 @@ PRESS_DICT = {
     "rkvlsh": RKVLSHPress(),
     "full": FullPress(),
     "none": NonePress(),  # No-op press that does nothing
+    "turboquant": TurboQuantPress(),
 }
 
 
@@ -201,6 +203,7 @@ def evaluate(
     key_channel_compression_ratio: float = 0.5,
     n_hash_buckets: int = 6,
     lam:float=0.1,
+    n_bits: int = 4,
     track_tokens: bool = False,
     track_buckets: bool = False,
     enable_qualitative_analysis: bool = False,
@@ -299,6 +302,11 @@ def evaluate(
             "__".join([dataset, data_dir if data_dir else "", model_name.replace("/", "--"), press_name, f"budget{cache_budget}",f"hash_bucket{n_hash_buckets}", f"max_new_tokens{max_new_tokens}",f"lam{lam_sanitized}"])
             + ".jsonl"
         )
+    elif press_name == "turboquant":
+        save_filename = save_dir / (
+            "__".join([dataset, data_dir if data_dir else "", model_name.replace("/", "--"), press_name, f"int{n_bits}", f"max_new_tokens{max_new_tokens}"])
+            + ".jsonl"
+        )
     else:
         save_filename = save_dir / (
             "__".join([dataset, data_dir if data_dir else "", model_name.replace("/", "--"), press_name, f"budget{cache_budget}", f"max_new_tokens{max_new_tokens}"])
@@ -352,6 +360,10 @@ def evaluate(
             # Set measure_latency flag to control internal timing
             if hasattr(press, 'measure_latency'):
                 press.measure_latency = measure_latency
+
+        if press_name == "turboquant" and press is not None:
+            press.n_bits = n_bits
+            press.cache_budget = 0  # use n_bits directly, not budget-derived bits
 
         if press_name=="rkvlsh" and press is not None:
             press.n_hash_buckets=n_hash_buckets
