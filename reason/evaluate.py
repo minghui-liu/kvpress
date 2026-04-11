@@ -194,6 +194,8 @@ def evaluate(
     cache_budget: int = 512,
     fraction: float = 1.0,
     num_samples: int = 0,
+    dataset_block_index: int = 0,
+    dataset_block_size: int = 50,
     random_seed: int = 42,
     max_new_tokens: Optional[int] = 2048,
     max_context_length: Optional[int] = None,
@@ -237,6 +239,10 @@ def evaluate(
         Fraction of the dataset to evaluate, by default 1.0
     num_samples : int, optional
         Number of samples to evaluate, by default 0
+    dataset_block_index : int, optional
+        1-based block index to evaluate within the selected dataset subset. If 0, evaluate all selected samples.
+    dataset_block_size : int, optional
+        Number of samples per block when dataset_block_index is set, by default 50
     random_seed : int, optional
         Random seed for reproducibility, by default 42
     max_context_length : int, optional
@@ -273,6 +279,8 @@ def evaluate(
 
     assert dataset in DATASET_DICT, f"No dataset found for {dataset}"
     assert dataset in SCORER_DICT, f"No scorer found for {dataset}"
+    assert dataset_block_index >= 0, "dataset_block_index must be >= 0"
+    assert dataset_block_size > 0, "dataset_block_size must be > 0"
 
     hf_name = DATASET_DICT[dataset][0]
     data_dir = DATASET_DICT[dataset][1] if data_dir is None else data_dir
@@ -317,6 +325,10 @@ def evaluate(
         save_filename = save_filename.with_name(save_filename.stem + f"__num_samples{num_samples}" + save_filename.suffix)
     elif fraction < 1.0:
         save_filename = save_filename.with_name(save_filename.stem + f"__fraction{fraction:.2f}" + save_filename.suffix)
+    if dataset_block_index > 0:
+        save_filename = save_filename.with_name(
+            save_filename.stem + f"__block{dataset_block_index}_size{dataset_block_size}" + save_filename.suffix
+        )
     if num_samples > 0 or fraction < 1.0:
         save_filename = save_filename.with_name(save_filename.stem + f"__seed{random_seed}" + save_filename.suffix)
     if max_context_length is not None:
@@ -324,6 +336,8 @@ def evaluate(
     if do_sampling:
         save_filename = save_filename.with_name(save_filename.stem + "__sampling" + save_filename.suffix)
     score_filename = save_dir / (save_filename.stem + "_score.json")
+    evaluated_sample_start = 1
+    evaluated_sample_end = 0
 
     if skip_existing and score_filename.exists():
         logger.warning(f"Score file already exists at {score_filename}, skipping evaluation")
@@ -347,6 +361,21 @@ def evaluate(
             ds = ds.shuffle(seed=random_seed).select(range(num_samples))
         elif fraction < 1.0:
             ds = ds.shuffle(seed=random_seed).select(range(int(len(ds) * fraction)))
+
+        selected_dataset_size = len(ds)
+        evaluated_sample_start = 1
+        evaluated_sample_end = selected_dataset_size
+        if dataset_block_index > 0:
+            block_start = (dataset_block_index - 1) * dataset_block_size
+            if block_start >= selected_dataset_size:
+                raise ValueError(
+                    f"dataset_block_index {dataset_block_index} with dataset_block_size {dataset_block_size} "
+                    f"starts at sample {block_start + 1}, which exceeds the selected dataset size {selected_dataset_size}."
+                )
+            block_end = min(block_start + dataset_block_size, selected_dataset_size)
+            ds = ds.select(range(block_start, block_end))
+            evaluated_sample_start = block_start + 1
+            evaluated_sample_end = block_end
 
         # Load press
         assert press_name in PRESS_DICT
@@ -494,7 +523,7 @@ def evaluate(
                         max_new_tokens=max_new_tokens,
                         do_sample=True,
                         top_p=0.9,
-                        temperature=0.7,
+                        temperature=0.6,
                         repetition_penalty=1.2,
                         use_cache=True,
                         eos_token_id=tokenizer.eos_token_id,
@@ -611,6 +640,7 @@ def evaluate(
             # Calculate metrics before deleting tensors
             input_token_count = inputs["input_ids"].shape[1]
             output_token_count = outputs[0].shape[0] - input_token_count
+            response_token_length = output_token_count
             total_token_count = outputs[0].shape[0]
             
             # Measure memory only if requested
@@ -646,6 +676,7 @@ def evaluate(
                     "gt_answer": gt_answer_text,
                     "input_token_count": input_token_count,
                     "output_token_count": output_token_count,
+                    "response_token_length": response_token_length,
                     "total_token_count": total_token_count,
                     "cache_budget": cache_budget,
                     "compression_ratio": actual_compression,
@@ -833,6 +864,14 @@ def evaluate(
     extracted_answers = [obj["extracted_answer"] for obj in save_obj]
     gt_answers = [obj["gt_answer"] for obj in save_obj]
 
+    if save_obj:
+        if dataset_block_index > 0:
+            evaluated_sample_start = (dataset_block_index - 1) * dataset_block_size + 1
+            evaluated_sample_end = evaluated_sample_start + len(save_obj) - 1
+        else:
+            evaluated_sample_start = 1
+            evaluated_sample_end = len(save_obj)
+
     # Calculate metrics
     scorer = SCORER_DICT[dataset]
     metrics = scorer(extracted_answers, gt_answers)
@@ -841,9 +880,19 @@ def evaluate(
     avg_compression = sum([obj["compression_ratio"] for obj in save_obj]) / len(save_obj)
     metrics["avg_compression"] = avg_compression
 
-    # Add actual output token counts (new tokens generated, not total processed)
+    # Add actual response token counts (generated answer length, excluding model-internal decoding accounting)
     metrics["total_output_tokens_generated"] = sum([obj["output_token_count"] for obj in save_obj])
     metrics["avg_output_tokens_generated_per_sample"] = metrics["total_output_tokens_generated"] / len(save_obj) if len(save_obj) > 0 else 0
+    response_token_lengths = [obj.get("response_token_length", obj["output_token_count"]) for obj in save_obj]
+    metrics["total_response_token_length"] = sum(response_token_lengths)
+    metrics["avg_response_token_length"] = metrics["total_response_token_length"] / len(save_obj) if len(save_obj) > 0 else 0
+    metrics["min_response_token_length"] = min(response_token_lengths) if response_token_lengths else 0
+    metrics["max_response_token_length"] = max(response_token_lengths) if response_token_lengths else 0
+    if response_token_lengths:
+        import statistics
+        metrics["std_response_token_length"] = statistics.stdev(response_token_lengths) if len(response_token_lengths) > 1 else 0.0
+    else:
+        metrics["std_response_token_length"] = 0.0
     
     # Add memory metrics if measured
     if measure_memory and save_obj:
@@ -885,6 +934,7 @@ def evaluate(
         metrics["avg_decoding_tokens_per_sample"] = metrics["total_decoding_tokens"] / len(save_obj) if len(save_obj) > 0 else 0
 
     metrics["num_samples"] = len(save_obj)
+    metrics["evaluated_num_samples"] = len(save_obj)
     metrics["dataset"] = dataset
     metrics["data_split"] = data_split
     metrics["data_dir"] = data_dir
@@ -895,7 +945,11 @@ def evaluate(
         metrics["n_hash_buckets"] = n_hash_buckets
         metrics["lam"] = lam
     metrics["fraction"] = fraction
-    metrics["num_samples"] = num_samples
+    metrics["requested_num_samples"] = num_samples
+    metrics["dataset_block_index"] = dataset_block_index
+    metrics["dataset_block_size"] = dataset_block_size
+    metrics["evaluated_sample_start"] = evaluated_sample_start if save_obj else 0
+    metrics["evaluated_sample_end"] = evaluated_sample_end if save_obj else 0
     metrics["max_new_tokens"] = max_new_tokens
     metrics["max_context_length"] = max_context_length
     metrics["random_seed"] = random_seed

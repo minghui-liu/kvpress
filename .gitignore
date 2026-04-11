@@ -170,3 +170,7 @@ cython_debug/
 *.json
 *.txt
 /retention_visualizations
+*.pdf
+*.md
+*.xlsx
+*.numbers

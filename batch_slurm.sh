@@ -1,11 +1,11 @@
 #!/bin/bash
-#SBATCH --job-name=large_model
+#SBATCH --job-name=dpbench
 #SBATCH --partition=litian,general
 #SBATCH --mem=32G
-#SBATCH --gres=gpu:a100:4
+#SBATCH --gres=gpu:a100:1
 #SBATCH --cpus-per-task=16
 #SBATCH --ntasks=1
-#SBATCH --array=0-119
+#SBATCH --array=0-2519
 #SBATCH --output=logs/%x_%A_%a.out
 #SBATCH --error=logs/%x_%A_%a.txt
 
@@ -24,32 +24,58 @@ RESULT_DIR="reason/results"
 mkdir -p logs "$RESULT_DIR"
 
 # Sweep settings
-PRESS_NAME=("rkv" "h2o" "knorm" "snapkv" "streaming_llm")
+PRESS_NAME=("rkv" "h2o" "knorm" "snapkv" "streaming_llm" "full")
 MODELS=(
-  "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B"
-  "deepseek-ai/DeepSeek-R1-Distill-Llama-70B"
+    "meta-llama/Llama-3.1-8B-Instruct",  # ML
+    "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",  # DQ
+    "nvidia/Llama-3.1-Nemotron-Nano-8B-v1",  # LN
+    "deepseek-ai/DeepSeek-R1-Distill-Llama-8B",  # DL
 )
 DATASETS=(
-  # "aime24"
   "math500"
-  # "gsm8k"
 )
-CACHE_BUDGETS=(128 256 512 1024)
+CACHE_BUDGETS=(128 256 384 512)
 LAMBDA=0
 N_HASH_BUCKETS=8
 
-NUM_SAMPLES=50
+NUM_SAMPLES=500
 RANDOM_SEEDS=(24 42 130)
+BLOCK_SIZE=50
+BLOCK_INDICES=(1 2 3 4 5 6 7 8 9 10)
 
 # =====================
 # Derived sizes
 # =====================
-NUM_MODELS=${#MODELS[@]}
-NUM_DATASETS=${#DATASETS[@]}
-NUM_BUDGETS=${#CACHE_BUDGETS[@]}
-NUM_PRESS_METHODS=${#PRESS_NAME[@]}
 NUM_SEEDS=${#RANDOM_SEEDS[@]}
-TOTAL=$((NUM_MODELS * NUM_DATASETS * NUM_BUDGETS * NUM_PRESS_METHODS * NUM_SEEDS))
+NUM_BLOCKS=${#BLOCK_INDICES[@]}
+
+SPEC_MODELS=()
+SPEC_DATASETS=()
+SPEC_PRESSES=()
+SPEC_BUDGETS=()
+
+for MODEL_NAME in "${MODELS[@]}"; do
+  for DATASET in "${DATASETS[@]}"; do
+    for PRESS_METHOD in "${PRESS_NAME[@]}"; do
+      if [[ "$PRESS_METHOD" == "full" ]]; then
+        SPEC_MODELS+=("$MODEL_NAME")
+        SPEC_DATASETS+=("$DATASET")
+        SPEC_PRESSES+=("$PRESS_METHOD")
+        SPEC_BUDGETS+=("${CACHE_BUDGETS[0]}")
+      else
+        for CACHE_BUDGET in "${CACHE_BUDGETS[@]}"; do
+          SPEC_MODELS+=("$MODEL_NAME")
+          SPEC_DATASETS+=("$DATASET")
+          SPEC_PRESSES+=("$PRESS_METHOD")
+          SPEC_BUDGETS+=("$CACHE_BUDGET")
+        done
+      fi
+    done
+  done
+done
+
+NUM_SPECS=${#SPEC_MODELS[@]}
+TOTAL=$((NUM_SPECS * NUM_SEEDS * NUM_BLOCKS))
 
 TASK_ID=${SLURM_ARRAY_TASK_ID:-0}
 if [[ $TASK_ID -ge $TOTAL ]]; then
@@ -57,22 +83,19 @@ if [[ $TASK_ID -ge $TOTAL ]]; then
   exit 1
 fi
 
-# Map array index to (model, dataset, budget, press_method, seed)
+# Map array index to (model, dataset, press_method, budget, seed, block)
 combo=$TASK_ID
-model_idx=$(( combo / (NUM_DATASETS * NUM_BUDGETS * NUM_PRESS_METHODS * NUM_SEEDS) ))
-rem=$(( combo % (NUM_DATASETS * NUM_BUDGETS * NUM_PRESS_METHODS * NUM_SEEDS) ))
-dataset_idx=$(( rem / (NUM_BUDGETS * NUM_PRESS_METHODS * NUM_SEEDS) ))
-rem=$(( rem % (NUM_BUDGETS * NUM_PRESS_METHODS * NUM_SEEDS) ))
-budget_idx=$(( rem / (NUM_PRESS_METHODS * NUM_SEEDS) ))
-rem=$(( rem % (NUM_PRESS_METHODS * NUM_SEEDS) ))
-press_idx=$(( rem / NUM_SEEDS ))
-seed_idx=$(( rem % NUM_SEEDS ))
+spec_idx=$(( combo / (NUM_SEEDS * NUM_BLOCKS) ))
+rem=$(( combo % (NUM_SEEDS * NUM_BLOCKS) ))
+seed_idx=$(( rem / NUM_BLOCKS ))
+block_idx=$(( rem % NUM_BLOCKS ))
 
-MODEL_NAME=${MODELS[$model_idx]}
-DATASET=${DATASETS[$dataset_idx]}
-CACHE_BUDGET=${CACHE_BUDGETS[$budget_idx]}
-PRESS_METHOD=${PRESS_NAME[$press_idx]}
+MODEL_NAME=${SPEC_MODELS[$spec_idx]}
+DATASET=${SPEC_DATASETS[$spec_idx]}
+PRESS_METHOD=${SPEC_PRESSES[$spec_idx]}
+CACHE_BUDGET=${SPEC_BUDGETS[$spec_idx]}
 RANDOM_SEED=${RANDOM_SEEDS[$seed_idx]}
+DATASET_BLOCK_INDEX=${BLOCK_INDICES[$block_idx]}
 MODEL_FILE=${MODEL_NAME//\//--}
 
 # =====================
@@ -110,11 +133,19 @@ else
   fi
 fi
 
-out_file="${RESULT_DIR}/${DATASET}____${MODEL_FILE}__${PRESS_METHOD}__budget${CACHE_BUDGET}__hash_bucket${N_HASH_BUCKETS}__max_new_tokens${MAX_NEW_TOKENS}__lam${lambda_sanitized}__num_samples${NUM_SAMPLES}__seed${RANDOM_SEED}__sampling.jsonl"
-score_file="${RESULT_DIR}/${DATASET}____${MODEL_FILE}__${PRESS_METHOD}__budget${CACHE_BUDGET}__hash_bucket${N_HASH_BUCKETS}__max_new_tokens${MAX_NEW_TOKENS}__lam${lambda_sanitized}__num_samples${NUM_SAMPLES}__seed${RANDOM_SEED}__sampling_score.json"
+if [[ "$PRESS_METHOD" == "rkv" || "$PRESS_METHOD" == "rkvlsh" ]]; then
+  file_stem="${DATASET}____${MODEL_FILE}__${PRESS_METHOD}__budget${CACHE_BUDGET}__hash_bucket${N_HASH_BUCKETS}__max_new_tokens${MAX_NEW_TOKENS}__lam${lambda_sanitized}__num_samples${NUM_SAMPLES}__block${DATASET_BLOCK_INDEX}_size${BLOCK_SIZE}__seed${RANDOM_SEED}__sampling"
+elif [[ "$PRESS_METHOD" == "turboquant" ]]; then
+  file_stem="${DATASET}____${MODEL_FILE}__${PRESS_METHOD}__int${N_BITS}__max_new_tokens${MAX_NEW_TOKENS}__num_samples${NUM_SAMPLES}__block${DATASET_BLOCK_INDEX}_size${BLOCK_SIZE}__seed${RANDOM_SEED}__sampling"
+else
+  file_stem="${DATASET}____${MODEL_FILE}__${PRESS_METHOD}__budget${CACHE_BUDGET}__max_new_tokens${MAX_NEW_TOKENS}__num_samples${NUM_SAMPLES}__block${DATASET_BLOCK_INDEX}_size${BLOCK_SIZE}__seed${RANDOM_SEED}__sampling"
+fi
+
+out_file="${RESULT_DIR}/${file_stem}.jsonl"
+score_file="${RESULT_DIR}/${file_stem}_score.json"
 
 if [[ -f "$score_file" ]]; then
-  echo "✅ Skipping $DATASET @ budget $CACHE_BUDGET (score exists: $(basename "$score_file"))"
+  echo "✅ Skipping $DATASET @ press=$PRESS_METHOD @ budget $CACHE_BUDGET @ block=$DATASET_BLOCK_INDEX (score exists: $(basename "$score_file"))"
   exit 0
 fi
 
@@ -122,13 +153,15 @@ if [[ -f "$out_file" ]]; then
   echo "⚠️  Results exist without score: $(basename "$out_file") — rerunning to generate score"
 fi
 
-echo "➡️  Running $DATASET | press=$PRESS_METHOD | budget=$CACHE_BUDGET | lambda=$LAMBDA | seed=$RANDOM_SEED | model=$MODEL_NAME"
+echo "➡️  Running $DATASET | press=$PRESS_METHOD | budget=$CACHE_BUDGET | lambda=$LAMBDA | seed=$RANDOM_SEED | block=$DATASET_BLOCK_INDEX/${NUM_BLOCKS} | model=$MODEL_NAME"
 python "$SCRIPT_PATH" \
   --dataset="$DATASET" \
   --model_name="$MODEL_NAME" \
   --press_name="$PRESS_METHOD" \
   --cache_budget="$CACHE_BUDGET" \
   --num_samples="$NUM_SAMPLES" \
+  --dataset_block_index="$DATASET_BLOCK_INDEX" \
+  --dataset_block_size="$BLOCK_SIZE" \
   --random_seed="$RANDOM_SEED" \
   --max_new_tokens="$MAX_NEW_TOKENS" \
   --n_hash_buckets="$N_HASH_BUCKETS" \
@@ -137,4 +170,4 @@ python "$SCRIPT_PATH" \
   --measure_memory=false \
   --measure_latency=false
 
-echo "✅ Done $DATASET | press=$PRESS_METHOD | budget=$CACHE_BUDGET | lambda=$LAMBDA"
+echo "✅ Done $DATASET | press=$PRESS_METHOD | budget=$CACHE_BUDGET | lambda=$LAMBDA | block=$DATASET_BLOCK_INDEX"

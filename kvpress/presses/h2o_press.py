@@ -125,7 +125,7 @@ class H2OPress(ScorerPress):
         
         if self.cache_budget >= q_len:
             # All tokens retained, track if needed
-            if layer_idx == 0:
+            if layer_idx == 0 and self.input_tokens is not None:
                 if kv_len <= len(self.input_tokens):
                     all_token_ids = self.input_tokens[:kv_len].cpu().tolist()
                     retained_token_ids = all_token_ids.copy()
@@ -141,7 +141,7 @@ class H2OPress(ScorerPress):
         indices = scores.topk(self.cache_budget, dim=-1).indices
 
         # Track token retention/eviction at first layer only
-        if layer_idx == 0:
+        if layer_idx == 0 and self.input_tokens is not None:
             # Map position indices to actual token IDs
             if kv_len <= len(self.input_tokens):
                 all_token_ids = self.input_tokens[:kv_len].cpu().tolist()

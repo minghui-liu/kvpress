@@ -8,6 +8,8 @@ This directory contains a set of scripts to evaluate the performance of differen
 - OpenbookQA ([allenai/openbookqa](https://huggingface.co/datasets/allenai/openbookqa))
 - MATH-500 ([HuggingFaceH4/MATH-500](https://huggingface.co/datasets/HuggingFaceH4/MATH-500))
 - AIME25 ([math-ai/aime25](https://huggingface.co/datasets/math-ai/aime25))
+- GPQA ([Idavidrein/gpqa](https://huggingface.co/datasets/Idavidrein/gpqa))
+- GPQA Diamond ([Idavidrein/gpqa](https://huggingface.co/datasets/Idavidrein/gpqa), config: `gpqa_diamond`)
 
 
 Please refer to the huggingface page and the original paper of each dataset for more information on how the Hugging Face dataset was generated.
