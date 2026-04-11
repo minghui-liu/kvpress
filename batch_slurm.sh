@@ -26,10 +26,10 @@ mkdir -p logs "$RESULT_DIR"
 # Sweep settings
 PRESS_NAME=("rkv" "h2o" "knorm" "snapkv" "streaming_llm" "full")
 MODELS=(
-    "meta-llama/Llama-3.1-8B-Instruct",  # ML
-    "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",  # DQ
-    "nvidia/Llama-3.1-Nemotron-Nano-8B-v1",  # LN
-    "deepseek-ai/DeepSeek-R1-Distill-Llama-8B",  # DL
+    "meta-llama/Llama-3.1-8B-Instruct"  # ML
+    "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"  # DQ
+    "nvidia/Llama-3.1-Nemotron-Nano-8B-v1"  # LN
+    "deepseek-ai/DeepSeek-R1-Distill-Llama-8B"  # DL
 )
 DATASETS=(
   "math500"
