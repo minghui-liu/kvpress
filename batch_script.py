@@ -27,25 +27,28 @@ from typing import List, Tuple
 SCRIPT_PATH = "reason/evaluate.py"
 RESULT_DIR = "reason/results"
 
-PRESS_NAMES = ["rkvlsh"]
+PRESS_NAMES = ["rkv", "h2o", "knorm", "snapkv", "streaming_llm"]
 
 MODELS = [
     # "meta-llama/Llama-3.1-8B-Instruct",  # ML
     "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",  
-    # "deepseek-ai/DeepSeek-R1-Distill-Qwen-14B",  # DQ
-    #"nvidia/Llama-3.1-Nemotron-Nano-8B-v1",  # LN
+    #"deepseek-ai/DeepSeek-R1-Distill-Qwen-14B",  # DQ
+    "nvidia/Llama-3.1-Nemotron-Nano-8B-v1",  # LN
     #"deepseek-ai/DeepSeek-R1-Distill-Llama-8B",  # DL
 ]
 
 DATASETS = [
     # "aime24",
-    "math500",
-    #"gsm8k",
+    # "math500",
+    "gsm8k",
+    # "drop",
+    # "reclor",
+    # "folio"
 ]
 
-CACHE_BUDGETS = [1024] #1024
-LAMBDA = 0  # Match batch.sh (was 0.01)
-N_HASH_BUCKETS_LIST = [4, 8, 16, 24]
+CACHE_BUDGETS = [128,256,384,512] #1024
+LAMBDA = 0.1  # Match batch.sh (was 0.01)
+N_HASH_BUCKETS_LIST = [6]
 RANDOM_SEED = 42
 
 # Max tokens modes to traverse (match batch.sh)
@@ -54,8 +57,11 @@ MAX_TOKENS_MODES = ["separate"]
 # Dataset-specific NUM_SAMPLES
 NUM_SAMPLES_MAP = {
     "aime24": 0,  # Match batch.sh
-    "math500": 100,
+    "math500": 500,
     "gsm8k": 100,
+    "drop":100,
+    "reclor": 100,
+    "folio": 100,
 }
 
 
@@ -69,9 +75,9 @@ def resolve_max_tokens(dataset: str, mode: str) -> int:
         elif dataset == "aime24":
             return 32768
         else:
-            return 2048
+            return 32768
     else:
-        return 2048
+        return 32768
 
 
 def format_lambda(lam: float) -> str:
