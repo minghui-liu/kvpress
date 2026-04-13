@@ -355,8 +355,6 @@ class BasePress:
         cache = kwargs["past_key_values"]
         q_len = hidden_states.shape[1]
 
-        is_prefilling = kwargs["cache_position"][-1] <= q_len
-
         if isinstance(cache, QuantizedCache):
             keys = cache._dequantize(cache._quantized_key_cache[module.layer_idx])
             values = cache._dequantize(cache._quantized_value_cache[module.layer_idx])
@@ -366,6 +364,14 @@ class BasePress:
             layer = cache.layers[module.layer_idx]
             keys = layer.keys
             values = layer.values
+
+        # Newer Transformers/Qwen attention paths may not pass `cache_position`
+        # through the attention forward kwargs. Fall back to inferring the phase
+        # from query length and cache length after the forward update.
+        if "cache_position" in kwargs and kwargs["cache_position"] is not None:
+            is_prefilling = kwargs["cache_position"][-1] <= q_len
+        else:
+            is_prefilling = q_len > 1 or keys.shape[2] <= q_len
 
         # Only measure timing if latency measurement is enabled
         if self.measure_latency:
