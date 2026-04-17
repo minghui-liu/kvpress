@@ -137,10 +137,10 @@ PRESS_DICT = {
 
 
 def output_attentions(press: BasePress):
-    if isinstance(press, H2OPress):
+    if isinstance(press, (H2OPress, KnormPress, StreamingLLMPress)):
         return True
     if isinstance(press, (KeyRerotationPress, PerLayerCompressionPress)) and isinstance(
-        press.press, H2OPress
+        press.press, (H2OPress, KnormPress, StreamingLLMPress)
     ):
         return True
     return False
@@ -409,13 +409,12 @@ def evaluate(
                 press.enable_qualitative_mode(model_name=model_short, press_name=press_name)
                 print(f"[{press_name.upper()}] Qualitative analysis enabled")
 
-        # Load model and tokenizer
-        # H2O press requires output_attentions=True and attn_implementation="eager"
-        h2o_config = {}
-        if press_name == "h2o":
-            h2o_config = {
+        # Presses that consume attentions or log attention loss need eager attention.
+        attention_config = {}
+        if output_attentions(press):
+            attention_config = {
                 "output_attentions": True,
-                "attn_implementation": "eager"
+                "attn_implementation": "eager",
             }
         
         if "SeerAttention" in model_name:
@@ -433,7 +432,7 @@ def evaluate(
                 trust_remote_code=True,
                 seerattn_sparsity_method='token_budget',
                 seerattn_token_budget=cache_budget,
-                **h2o_config
+                **attention_config
             )
             model.to(device)
         else:
@@ -447,7 +446,7 @@ def evaluate(
                 torch_dtype="auto",
                 device_map="auto",
                 trust_remote_code=True,
-                **h2o_config
+                **attention_config
             )
         
         # Set pad token to eos token if not already set (required for generation)

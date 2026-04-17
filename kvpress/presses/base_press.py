@@ -352,7 +352,11 @@ class BasePress:
 
         """
         hidden_states = kwargs["hidden_states"]
-        cache = kwargs["past_key_values"]
+        cache = kwargs.get("past_key_values")
+        if cache is None:
+            cache = kwargs.get("past_key_value")
+        if cache is None:
+            raise KeyError("Neither 'past_key_values' nor 'past_key_value' found in attention hook kwargs")
         q_len = hidden_states.shape[1]
 
         if isinstance(cache, QuantizedCache):

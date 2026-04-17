@@ -3,6 +3,7 @@
 
 
 import math
+import csv
 import json
 import os
 from dataclasses import dataclass
@@ -13,6 +14,8 @@ from torch.nn import functional as F
 from transformers.models.llama.modeling_llama import repeat_kv, rotate_half
 
 from kvpress.presses.scorer_press import ScorerPress
+
+GLOBAL_ATTN_WEIGHTS = None
 
 
 @dataclass
@@ -26,6 +29,8 @@ class RKVPress(ScorerPress):
     # compression_ratio: float = 0.0
     window_size: int = 8 # number of observation tokens always kept in the cache
     kernel_size: int = 5
+    attn_csv_path: str = "attn_loss.csv"
+    prune_step: int = 0
 
     def __post_init__(self):
         super().__post_init__()
@@ -104,6 +109,8 @@ class RKVPress(ScorerPress):
             attn_weights = self.compute_window_attention(
                 module, hidden_states, keys, self.window_size, kwargs["position_embeddings"]
             )
+        global GLOBAL_ATTN_WEIGHTS
+        GLOBAL_ATTN_WEIGHTS = attn_weights.detach()
         scores = attn_weights.mean(dim=-2)   
         # Average per group (https://github.com/FasterDecoding/SnapKV/issues/22)
         scores = scores.view(bsz, num_key_value_heads, num_key_value_groups, q_len - self.window_size)
@@ -133,6 +140,28 @@ class RKVPress(ScorerPress):
         # Add back the observation window. Use max score to make sure the window is not pruned.
         scores = F.pad(scores, (0, self.window_size), value=scores.max().item())
         return scores
+
+    @staticmethod
+    def get_avg_attention_for_index(indices, attn_weights, b=0, k=0):
+        idx = indices[b, :, :, 0]
+        attn_weights = attn_weights.to(torch.float32)
+        max_valid_key = attn_weights.shape[-1]
+        total = torch.zeros((), device=attn_weights.device, dtype=torch.float32)
+        for kvh in range(idx.shape[0]):
+            key_idx = int(idx[kvh, k].item())
+            if key_idx >= max_valid_key:
+                continue
+            total = total + attn_weights[b, :, :, key_idx].sum()
+        return total
+
+    @staticmethod
+    def get_avg_attention_for_all_indices(indices, attn_weights, b=0):
+        attn_weights = attn_weights.to(torch.float32)
+        total = torch.zeros((), device=attn_weights.device, dtype=torch.float32)
+        num_positions = indices.shape[2]
+        for k in range(num_positions):
+            total = total + RKVPress.get_avg_attention_for_index(indices, attn_weights, b=b, k=k)
+        return total
     
 
     def _get_hidden_size(self, module, device="cuda"):
@@ -205,6 +234,8 @@ class RKVPress(ScorerPress):
         # scores = self.score(module, hidden_states, keys, values, attentions, False, kwargs)
         scores = self.score(module, self.acc_hidden_states[:, -self.window_size:, :], keys, values, attentions, False, kwargs)
         # Get indices of KV pairs with the lowest scores
+        full_indices = scores.topk(scores.shape[-1], dim=-1).indices
+        full_indices = full_indices.unsqueeze(-1).expand(-1, -1, -1, module.head_dim)
         indices = scores.topk(self.cache_budget, dim=-1).indices
         indices = indices.unsqueeze(-1).expand(-1, -1, -1, module.head_dim)
 
@@ -225,6 +256,47 @@ class RKVPress(ScorerPress):
 
             # Log qualitative decisions if enabled
             self.log_qualitative_decisions(indices, kv_len, scores)
+
+        if GLOBAL_ATTN_WEIGHTS is not None:
+            try:
+                csv_path = self.attn_csv_path
+                file_exists = os.path.exists(csv_path)
+                with open(csv_path, "a", newline="") as f:
+                    writer = csv.writer(f)
+                    if not file_exists:
+                        writer.writerow(
+                            [
+                                "prune_step",
+                                "layer_idx",
+                                "head_idx",
+                                "kv_len_pre",
+                                "attn_len",
+                                "diff_indices",
+                                "attn_loss",
+                            ]
+                        )
+                    bsz, num_kv_heads, _, _ = indices.shape
+                    for head_idx in range(num_kv_heads):
+                        full_h = full_indices[:, head_idx : head_idx + 1, :, :]
+                        kept_h = indices[:, head_idx : head_idx + 1, :, :]
+                        loss_h = (
+                            RKVPress.get_avg_attention_for_all_indices(full_h, GLOBAL_ATTN_WEIGHTS, b=0)
+                            - RKVPress.get_avg_attention_for_all_indices(kept_h, GLOBAL_ATTN_WEIGHTS, b=0)
+                        )
+                        writer.writerow(
+                            [
+                                self.prune_step,
+                                getattr(module, "layer_idx", -1),
+                                head_idx,
+                                keys.shape[2],
+                                GLOBAL_ATTN_WEIGHTS.shape[-1],
+                                full_h.shape[2] - kept_h.shape[2],
+                                float(loss_h.item() if hasattr(loss_h, "item") else loss_h),
+                            ]
+                        )
+                self.prune_step += 1
+            except Exception:
+                pass
 
         # Prune keys and values
         keys = keys.gather(2, indices).contiguous()
@@ -534,4 +606,3 @@ class RKVPress(ScorerPress):
             f.write(f"\nThis shows how effectively RKV identifies and drops repetitive filler words.\n")
 
         print(f"[RKV] Summary saved to: {summary_file}")
-
