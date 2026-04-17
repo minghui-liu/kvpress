@@ -893,6 +893,11 @@ def evaluate(
         metrics["std_response_token_length"] = statistics.stdev(response_token_lengths) if len(response_token_lengths) > 1 else 0.0
     else:
         metrics["std_response_token_length"] = 0.0
+    metrics["num_responses_reaching_max_output_tokens"] = (
+        sum(1 for length in response_token_lengths if max_new_tokens is not None and length >= max_new_tokens)
+        if response_token_lengths
+        else 0
+    )
     
     # Add memory metrics if measured
     if measure_memory and save_obj:
