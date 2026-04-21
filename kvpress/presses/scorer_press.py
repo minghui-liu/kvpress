@@ -3,8 +3,6 @@
 
 
 import logging
-import json
-import os
 from dataclasses import dataclass
 
 import torch
@@ -33,11 +31,9 @@ class ScorerPress(BasePress):
         super().__post_init__()
         assert 0 <= self.compression_ratio < 1, "Compression ratio must be between 0 and 1"
         
-        # Initialize ranking data collection
-        # Only create directory if tracking is enabled (will be set later via set_tokenizer_and_tokens)
+        # Initialize in-memory ranking data collection.
         self.ranking_data = []
         self.save_dir = "ranking_analysis"
-        # Don't create directory here - only create when actually needed (when tokenizer is set)
         
         # Tokenizer for decoding tokens (will be set during inference)
         self.tokenizer = None
@@ -65,13 +61,10 @@ class ScorerPress(BasePress):
         self.input_tokens = input_tokens
 
     def save_ranking_data(self, scores, indices, kv_len, is_prefill):
-        """Save ranking data for analysis."""
+        """Collect ranking data in memory without writing auxiliary files."""
         # Only save if tokenizer is set (tracking enabled)
         if self.tokenizer is None:
             return
-        # Create directory only when needed (first time saving)
-        if not os.path.exists(self.save_dir):
-            os.makedirs(self.save_dir, exist_ok=True)
         try:
             # Convert tensors to numpy
             scores_np = scores.cpu().numpy().flatten()
@@ -133,30 +126,13 @@ class ScorerPress(BasePress):
             
             # Add to ranking data
             self.ranking_data.append(ranking_entry)
-            
-            # Save individual ranking data
-            ranking_file = os.path.join(self.save_dir, f"ranking_data_{len(self.ranking_data)}.json")
-            with open(ranking_file, 'w') as f:
-                json.dump(ranking_entry, f, indent=2)
                 
         except Exception as e:
             print(f"Error saving ranking data: {e}")
     
     def save_all_ranking_data(self, filename="all_ranking_data.json"):
-        """Save all collected ranking data to a single file."""
-        # Only save if tokenizer is set (tracking enabled)
-        if self.tokenizer is None:
-            return
-        # Create directory only when needed
-        if not os.path.exists(self.save_dir):
-            os.makedirs(self.save_dir, exist_ok=True)
-        try:
-            output_file = os.path.join(self.save_dir, filename)
-            with open(output_file, 'w') as f:
-                json.dump(self.ranking_data, f, indent=2)
-            print(f"Saved {len(self.ranking_data)} ranking entries to {output_file}")
-        except Exception as e:
-            print(f"Error saving all ranking data: {e}")
+        """Retained for compatibility; auxiliary ranking files are disabled."""
+        return
     
     def reset_ranking_data(self):
         """Reset collected ranking data."""

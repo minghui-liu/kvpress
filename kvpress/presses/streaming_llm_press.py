@@ -3,8 +3,6 @@
 
 
 from dataclasses import dataclass
-import os
-import csv
 
 import torch
 from torch import nn
@@ -94,71 +92,6 @@ class StreamingLLMPress(ScorerPress):
         #     print(f"[DEBUG] diff indices: {full_len - kept_len}")
         # except Exception:
         #     pass
-
-        # If attentions are provided, compute attention mass removed using accumulated attentions (more stable)
-        try:
-            if attentions is not None:
-                bsz, n_heads, _, q_len = attentions.shape
-                n_kv_groups = module.num_key_value_groups
-                n_kv_heads = n_heads // n_kv_groups
-
-                # Initialize accumulators lazily
-                if not hasattr(self, "acc_attn") or self.acc_attn is None:
-                    # Start with zeros of length q_len for the first call
-                    self.acc_attn = torch.zeros(bsz, n_kv_heads, q_len, device=attentions.device, dtype=attentions.dtype)
-                    self.n_tokens_in_sum = torch.zeros_like(self.acc_attn)
-
-                # Build per-key mass for this step and accumulate (sum over queries, average kv groups)
-                step_sum = attentions.sum(2)  # [B, H, L]
-                step_kv = step_sum.view(bsz, n_kv_heads, n_kv_groups, q_len).mean(2)  # [B, Hkv, L]
-
-                # Align accumulator length if sequence grew
-                if step_kv.shape[-1] > self.acc_attn.shape[-1]:
-                    grow = step_kv.shape[-1] - self.acc_attn.shape[-1]
-                    pad = torch.zeros(bsz, n_kv_heads, grow, device=attentions.device, dtype=attentions.dtype)
-                    self.acc_attn = torch.cat([self.acc_attn, pad], dim=-1)
-                    self.n_tokens_in_sum = torch.cat([self.n_tokens_in_sum, pad], dim=-1)
-
-                self.acc_attn[:, :, : q_len] = self.acc_attn[:, :, : q_len] + step_kv
-                self.n_tokens_in_sum[:, :, : q_len] = self.n_tokens_in_sum[:, :, : q_len] + 1
-
-                # Average accumulated attention
-                attn_kv = self.acc_attn[:, :, : q_len] / torch.clamp_min(self.n_tokens_in_sum[:, :, : q_len], 1)
-
-                csv_path = self.attn_csv_path
-                file_exists = os.path.exists(csv_path)
-                with open(csv_path, "a", newline="") as f:
-                    writer = csv.writer(f)
-                    if not file_exists:
-                        writer.writerow([
-                            "prune_step",
-                            "layer_idx",
-                            "head_idx",
-                            "kv_len_pre",
-                            "attn_len",
-                            "diff_indices",
-                            "attn_loss",
-                        ])
-                    for head_idx in range(attn_kv.shape[1]):
-                        head_attn = attn_kv[:, head_idx, :]  # [B, L]
-                        kept_pos = indices[:, head_idx, :]    # [B, K]
-                        pre_total = head_attn.sum(-1)         # [B]
-                        kept_total = head_attn.gather(-1, kept_pos).sum(-1)  # [B]
-                        loss_h = (pre_total - kept_total).sum()  # scalar over batch
-                        row = [
-                            self.prune_step,
-                            getattr(module, "layer_idx", -1),
-                            head_idx,
-                            keys.shape[2],
-                            q_len,
-                            int(full_len - kept_len),
-                            float(loss_h.item()),
-                        ]
-                        writer.writerow(row)
-                        # print(f"[CSV] {row}")
-                self.prune_step += 1
-        except Exception as e:
-            print(f"[WARN] StreamingLLM attn loss logging failed: {e}")
 
         # Gather pruned keys/values
         kv_indices = indices.unsqueeze(-1).expand(-1, -1, -1, module.head_dim)

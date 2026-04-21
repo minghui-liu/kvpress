@@ -828,13 +828,10 @@ class RKVLSHPress(ScorerPress):
         print(f"[RKV-LSH] Summary saved to: {summary_file}")
 
     def save_ranking_data(self, scores, indices, kv_len, is_prefill):
-        """Save ranking data for analysis. Only called when track_tokens=True (tokenizer is set)."""
+        """Collect ranking data in memory without writing auxiliary files."""
         # Double-check: only save if tokenizer is set (tracking enabled)
         if self.tokenizer is None:
             return
-        # Create directory only when needed (first time saving)
-        if not os.path.exists(self.save_dir):
-            os.makedirs(self.save_dir, exist_ok=True)
         try:
             # Only move to CPU if we're actually saving ranking data
             # Keep operations on GPU as much as possible - only convert when needed for numpy
@@ -901,34 +898,13 @@ class RKVLSHPress(ScorerPress):
             
             # Add to ranking data
             self.ranking_data.append(ranking_entry)
-            
-            # Save individual ranking data
-            class_name = self.__class__.__name__.lower()
-            ranking_file = os.path.join(self.save_dir, f"ranking_data_{class_name}_budget{self.cache_budget}.json")
-            with open(ranking_file, 'w') as f:
-                json.dump(ranking_entry, f, indent=2)
                 
         except Exception as e:
             print(f"Error saving ranking data: {e}")
     
     def save_all_ranking_data(self, filename=None):
-        """Save all collected ranking data to a single file. Only called when track_tokens=True."""
-        # Double-check: only save if tokenizer is set (tracking enabled)
-        if self.tokenizer is None:
-            return
-        # Create directory only when needed
-        if not os.path.exists(self.save_dir):
-            os.makedirs(self.save_dir, exist_ok=True)
-        try:
-            if filename is None:
-                class_name = self.__class__.__name__.lower()
-                filename = f"all_ranking_data_{class_name}_budget{self.cache_budget}.json"
-            output_file = os.path.join(self.save_dir, filename)
-            with open(output_file, 'w') as f:
-                json.dump(self.ranking_data, f, indent=2)
-            print(f"All ranking data saved to: {output_file}")
-        except Exception as e:
-            print(f"Error saving all ranking data: {e}")
+        """Retained for compatibility; auxiliary ranking files are disabled."""
+        return
     
     def reset_ranking_data(self):
         """Reset collected ranking data."""

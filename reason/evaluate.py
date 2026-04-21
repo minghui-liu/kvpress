@@ -351,9 +351,6 @@ def evaluate(
         # Clear the file first if it exists
         if save_filename.exists():
             save_filename.unlink()
-        # Delete step tracking file if it exists (will be recreated if needed)
-        if save_filename.with_suffix('.step_tracking.json').exists():
-            save_filename.with_suffix('.step_tracking.json').unlink()
         # Load datasetf
         ds = load_reason_dataset(hf_name, data_dir, data_split)
         if num_samples > 0:
@@ -402,14 +399,7 @@ def evaluate(
             if track_buckets:
                 press.enable_bucket_tracking()
 
-        # Enable qualitative analysis for both RKV and RKV-LSH
-        if (press_name in ["rkv", "rkvlsh"]) and press is not None and enable_qualitative_analysis:
-            if hasattr(press, 'enable_qualitative_mode'):
-                model_short = model_name.replace("/", "--")
-                press.enable_qualitative_mode(model_name=model_short, press_name=press_name)
-                print(f"[{press_name.upper()}] Qualitative analysis enabled")
-
-        # Presses that consume attentions or log attention loss need eager attention.
+        # Presses that consume attentions need eager attention.
         attention_config = {}
         if output_attentions(press):
             attention_config = {
@@ -717,9 +707,6 @@ def evaluate(
             # Add timing metrics to save_obj
             save_obj.update(timing_metrics)
             
-            if track_tokens and press is not None and hasattr(press, 'save_all_ranking_data'):
-                press.save_all_ranking_data()
-            
             if track_tokens and not is_seer_attention_none:
                 # Track keyword retention if press tracks retention
                 # NonePress doesn't track retention, so skip if it's NonePress
@@ -774,21 +761,6 @@ def evaluate(
                 
                 # Save generation_steps to save_obj
                 save_obj['generation_steps'] = generation_steps
-                
-                if not is_seer_attention_none and generation_steps:
-                    step_tracking_file = save_filename.with_suffix('.step_tracking.json')
-                    step_data = {
-                        'question_index': i,
-                        'input_text': input_text,
-                        'question_id': example.get('question', '')[:100] if 'question' in example else f'question_{i}',
-                        'model_name': model_name,
-                        'press_name': press_name,
-                        'cache_budget': cache_budget,
-                        'generation_steps': generation_steps
-                    }
-                    # Append to file incrementally (one JSON object per line)
-                    with open(str(step_tracking_file), "a", encoding='utf-8') as step_f:
-                        step_f.write(json.dumps(step_data, indent=2) + "\n")
             else:
                 save_obj['keywords'] = {}
                 save_obj['keyword_retention'] = {}
@@ -808,8 +780,7 @@ def evaluate(
             # Clear save_obj to free memory
             del save_obj
 
-            # Save current sample qualitative data and prepare for next sample
-            # next_sample() will automatically save the current sample incrementally
+            # Advance qualitative sample state without writing auxiliary files.
             if enable_qualitative_analysis and press_name in ["rkv", "rkvlsh"] and press is not None:
                 if hasattr(press, 'next_sample'):
                     press.next_sample()
@@ -843,16 +814,6 @@ def evaluate(
                 gc.collect()
                 gc.collect()  # Second pass
                 print(f"   🧹 Aggressive memory cleanup after {i+1} samples")
-
-        # Save qualitative analysis data after all samples are processed
-        if enable_qualitative_analysis and press_name in ["rkv", "rkvlsh"] and press is not None:
-            # Save the last sample's data (since next_sample() is only called between samples)
-            if hasattr(press, 'save_current_sample_incremental'):
-                press.save_current_sample_incremental()
-            # Generate the final summary file
-            if hasattr(press, 'save_qualitative_analysis'):
-                press.save_qualitative_analysis()
-                print(f"✅ Qualitative analysis complete - check {press.qualitative_output_file}")
 
         print(f"\n✅ All results saved to {save_filename}")
     # end of the if save_filename.exists()
