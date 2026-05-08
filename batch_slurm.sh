@@ -16,8 +16,10 @@ source /opt/conda/etc/profile.d/conda.sh
 conda activate py310
 
 # Huggingface
-export HF_HOME=/net/projects2/tianlab/dixi/cache/
+export HUGGINGFACE_TOKEN="xxx"
 export CUDA_LAUNCH_BLOCKING=1
+huggingface-cli login --token "$HUGGINGFACE_TOKEN"
+export HF_HOME=/net/projects2/tianlab/dixi/cache/
 
 # Paths
 SCRIPT_PATH="reason/evaluate.py"

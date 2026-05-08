@@ -31,12 +31,13 @@ class SnapKVPress(ScorerPress):
         Compute the last window_size queries and associated attention weights for the first q_len - window_size keys.
         """
 
-        bsz, q_len, _ = hidden_states.shape
+        bsz, _, _ = hidden_states.shape
         num_heads = module.config.num_attention_heads
         head_dim = module.head_dim
         num_key_value_groups = num_heads // module.config.num_key_value_heads
+        kv_len = keys.shape[2]
 
-        # Get last window_size queries
+        # Get last window_size queries (may be fewer during decoding)
         if hasattr(module, "q_proj"):
             query_states = module.q_proj(hidden_states[:, -window_size:])
         elif hasattr(module, "qkv_proj"):
@@ -45,18 +46,20 @@ class SnapKVPress(ScorerPress):
         else:
             raise NotImplementedError(f"SnapKV not yet implemented for {module.__class__}.")
 
-        query_states = query_states.view(bsz, window_size, num_heads, head_dim).transpose(1, 2)
+        actual_window = query_states.shape[1]
+        query_states = query_states.view(bsz, actual_window, num_heads, head_dim).transpose(1, 2)
 
         # Apply RoPE
         cos, sin = position_embeddings
-        cos, sin = cos[:, -window_size:], sin[:, -window_size:]
+        cos, sin = cos[:, -actual_window:], sin[:, -actual_window:]
         query_states = (query_states * cos.unsqueeze(1)) + (rotate_half(query_states) * sin.unsqueeze(1))
 
-        # Compute attention for first q_len - window_size tokens
+        # Compute attention for first kv_len - window_size tokens
+        # Use kv_len (not hidden_states q_len) for the causal mask so decode works correctly
         key_states = repeat_kv(keys, num_key_value_groups)
         attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(head_dim)
         attention_mask = torch.ones_like(attn_weights) * float("-inf")
-        attention_mask = torch.triu(attention_mask, diagonal=q_len - window_size + 1)
+        attention_mask = torch.triu(attention_mask, diagonal=kv_len - actual_window + 1)
         attn_weights += attention_mask
         attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
         attn_weights = attn_weights[..., :-window_size]
