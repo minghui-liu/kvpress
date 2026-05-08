@@ -12,7 +12,7 @@
 set -euo pipefail
 
 # Env
-source /home/dixi/.cache/pypoetry/virtualenvs/kvpress-CimsZS3I-py3.10/bin/activate
+conda activate py310
 
 # Huggingface
 export HF_HOME=/net/projects2/tianlab/dixi/cache/
