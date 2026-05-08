@@ -1,11 +1,11 @@
 #!/bin/bash
 #SBATCH --job-name=math500_check
-#SBATCH --partition=litian,general
+#SBATCH --partition=tianlab-contrib,tianlab-own
 #SBATCH --mem=32G
-#SBATCH --gres=gpu:a100:1
+#SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=16
 #SBATCH --ntasks=1
-#SBATCH --array=0-143
+#SBATCH --array=0-479
 #SBATCH --output=logs/%x_%A_%a.out
 #SBATCH --error=logs/%x_%A_%a.txt
 
@@ -15,7 +15,7 @@ set -euo pipefail
 source /home/dixi/.cache/pypoetry/virtualenvs/kvpress-CimsZS3I-py3.10/bin/activate
 
 # Huggingface
-export HF_HOME=/net/projects2/litian-lab/dixi/cache/
+export HF_HOME=/net/projects2/tianlab/dixi/cache/
 export CUDA_LAUNCH_BLOCKING=1
 
 # Paths
@@ -40,8 +40,8 @@ N_HASH_BUCKETS=8
 
 NUM_SAMPLES=100
 RANDOM_SEEDS=(24 42 130)
-BLOCK_SIZE=25
-BLOCK_INDICES=(1 2 3 4)
+BLOCK_SIZE=10
+BLOCK_INDICES=(1 2 3 4 5 6 7 8 9 10)
 
 # =====================
 # Derived sizes
