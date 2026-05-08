@@ -12,7 +12,7 @@
 set -euo pipefail
 
 # Env
-conda init
+source /opt/conda/etc/profile.d/conda.sh
 conda activate py310
 
 # Huggingface
