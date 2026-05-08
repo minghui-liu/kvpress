@@ -1,11 +1,11 @@
 #!/bin/bash
-#SBATCH --job-name=dpbench
+#SBATCH --job-name=math500_check
 #SBATCH --partition=litian,general
 #SBATCH --mem=32G
 #SBATCH --gres=gpu:a100:1
 #SBATCH --cpus-per-task=16
 #SBATCH --ntasks=1
-#SBATCH --array=0-2519
+#SBATCH --array=0-143
 #SBATCH --output=logs/%x_%A_%a.out
 #SBATCH --error=logs/%x_%A_%a.txt
 
@@ -24,9 +24,9 @@ RESULT_DIR="reason/results"
 mkdir -p logs "$RESULT_DIR"
 
 # Sweep settings
-PRESS_NAME=("rkv" "h2o" "knorm" "snapkv" "streaming_llm" "full")
+PRESS_NAME=("snapkv") #"rkv" "h2o" "knorm" "snapkv" "streaming_llm" "full"
 MODELS=(
-    "meta-llama/Llama-3.1-8B-Instruct"  # ML
+    #"meta-llama/Llama-3.1-8B-Instruct"  # ML
     "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"  # DQ
     "nvidia/Llama-3.1-Nemotron-Nano-8B-v1"  # LN
     "deepseek-ai/DeepSeek-R1-Distill-Llama-8B"  # DL
@@ -38,10 +38,10 @@ CACHE_BUDGETS=(128 256 384 512)
 LAMBDA=0
 N_HASH_BUCKETS=8
 
-NUM_SAMPLES=500
+NUM_SAMPLES=100
 RANDOM_SEEDS=(24 42 130)
-BLOCK_SIZE=50
-BLOCK_INDICES=(1 2 3 4 5 6 7 8 9 10)
+BLOCK_SIZE=25
+BLOCK_INDICES=(1 2 3 4)
 
 # =====================
 # Derived sizes
