@@ -210,7 +210,8 @@ def evaluate(
     track_buckets: bool = False,
     enable_qualitative_analysis: bool = False,
     measure_memory: bool = True,
-    measure_latency: bool = True
+    measure_latency: bool = True,
+    temperature: float = 0.6,
 ):
     """
     Evaluate a model on a dataset using a press and save the results
@@ -512,7 +513,7 @@ def evaluate(
                         max_new_tokens=max_new_tokens,
                         do_sample=True,
                         top_p=0.9,
-                        temperature=0.6,
+                        temperature=temperature,
                         repetition_penalty=1.2,
                         use_cache=True,
                         eos_token_id=tokenizer.eos_token_id,
@@ -592,7 +593,7 @@ def evaluate(
                             max_new_tokens=max_new_tokens,
                             do_sample=True,
                             top_p=0.9,
-                            temperature=0.7,
+                            temperature=temperature,
                             repetition_penalty=1.2,
                             use_cache=True,
                             eos_token_id=tokenizer.eos_token_id,

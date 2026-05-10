@@ -114,6 +114,9 @@ case "$DATASET" in
   gsm8k)
     MAX_NEW_TOKENS=16384
     ;;
+  folio)
+    MAX_NEW_TOKENS=4096
+    ;;
   *)
     echo "Unknown dataset: $DATASET"
     exit 1
@@ -169,6 +172,7 @@ python "$SCRIPT_PATH" \
   --max_new_tokens="$MAX_NEW_TOKENS" \
   --n_hash_buckets="$N_HASH_BUCKETS" \
   --lam="$LAMBDA" \
+  --temperature=0.6 \
   --track_tokens=false \
   --measure_memory=false \
   --measure_latency=false
