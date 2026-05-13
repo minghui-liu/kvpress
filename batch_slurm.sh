@@ -1,25 +1,24 @@
 #!/bin/bash
-#SBATCH --job-name=math500_check
-#SBATCH --partition=tianlab-contrib,tianlab-own
+#SBATCH --job-name=max5096all
+#SBATCH --partition=litian,general
 #SBATCH --mem=32G
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=16
 #SBATCH --ntasks=1
-#SBATCH --array=1-359
+#SBATCH --array=0-159  #all 480 jobs
 #SBATCH --output=logs/%x_%A_%a.out
 #SBATCH --error=logs/%x_%A_%a.txt
 
 set -euo pipefail
 
 # Env
-source /opt/conda/etc/profile.d/conda.sh
-conda activate py310
+# conda init
+# conda activate py310
+source /home/dixi/.cache/pypoetry/virtualenvs/kvpress-CimsZS3I-py3.10/bin/activate
 
 # Huggingface
-export HUGGINGFACE_TOKEN="xxx"
+export HF_HOME=/net/projects2/litian-lab/dixi/cache/
 export CUDA_LAUNCH_BLOCKING=1
-huggingface-cli login --token "$HUGGINGFACE_TOKEN"
-export HF_HOME=/net/projects2/tianlab/dixi/cache/
 
 # Paths
 SCRIPT_PATH="reason/evaluate.py"
@@ -27,15 +26,16 @@ RESULT_DIR="reason/results"
 mkdir -p logs "$RESULT_DIR"
 
 # Sweep settings
-PRESS_NAME=("snapkv") #"rkv" "h2o" "knorm" "snapkv" "streaming_llm" "full"
+PRESS_NAME=("rkv")  # "full" "rkv" "h2o" "knorm" "snapkv" "streaming_llm"
 MODELS=(
-    #"meta-llama/Llama-3.1-8B-Instruct"  # ML
+    "meta-llama/Llama-3.1-8B-Instruct"  # ML
     "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"  # DQ
     "nvidia/Llama-3.1-Nemotron-Nano-8B-v1"  # LN
     "deepseek-ai/DeepSeek-R1-Distill-Llama-8B"  # DL
+    "deepseek-ai/DeepSeek-R1-Distill-Qwen-14B"  # DQ
 )
 DATASETS=(
-  "math500"
+  "gsm8k" "drop" "reclor" "folio"
 )
 CACHE_BUDGETS=(128 256 384 512)
 LAMBDA=0
@@ -43,8 +43,8 @@ N_HASH_BUCKETS=8
 
 NUM_SAMPLES=100
 RANDOM_SEEDS=(24 42 130)
-BLOCK_SIZE=10
-BLOCK_INDICES=(1 2 3 4 5 6 7 8 9 10)
+BLOCK_SIZE=50
+BLOCK_INDICES=(1 2)
 
 # =====================
 # Derived sizes
@@ -108,14 +108,23 @@ case "$DATASET" in
   aime24)
     MAX_NEW_TOKENS=32768
     ;;
+  aime25)
+    MAX_NEW_TOKENS=32768
+    ;;
   math500)
     MAX_NEW_TOKENS=16384
     ;;
   gsm8k)
-    MAX_NEW_TOKENS=16384
+    MAX_NEW_TOKENS=5096
+    ;;
+  drop)
+    MAX_NEW_TOKENS=5096
+    ;;
+  reclor)
+    MAX_NEW_TOKENS=5096
     ;;
   folio)
-    MAX_NEW_TOKENS=4096
+    MAX_NEW_TOKENS=5096
     ;;
   *)
     echo "Unknown dataset: $DATASET"
@@ -172,9 +181,9 @@ python "$SCRIPT_PATH" \
   --max_new_tokens="$MAX_NEW_TOKENS" \
   --n_hash_buckets="$N_HASH_BUCKETS" \
   --lam="$LAMBDA" \
-  --temperature=0.6 \
   --track_tokens=false \
   --measure_memory=false \
-  --measure_latency=false
+  --measure_latency=false \
+  --temperature=0.6
 
 echo "✅ Done $DATASET | press=$PRESS_METHOD | budget=$CACHE_BUDGET | lambda=$LAMBDA | block=$DATASET_BLOCK_INDEX"
