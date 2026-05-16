@@ -1,23 +1,20 @@
 #!/bin/bash
-#SBATCH --job-name=max5096all
+#SBATCH --job-name=snapkv_variouswindow
 #SBATCH --partition=litian,general
 #SBATCH --mem=32G
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=16
 #SBATCH --ntasks=1
-#SBATCH --array=0-159  #all 480 jobs
+#SBATCH --array=0-539
 #SBATCH --output=logs/%x_%A_%a.out
 #SBATCH --error=logs/%x_%A_%a.txt
 
 set -euo pipefail
 
-# Env
-# conda init
-# conda activate py310
-source /home/dixi/.cache/pypoetry/virtualenvs/kvpress-CimsZS3I-py3.10/bin/activate
+source /opt/conda/etc/profile.d/conda.sh
+conda activate py310
 
-# Huggingface
-export HF_HOME=/net/projects2/litian-lab/dixi/cache/
+export HF_HOME=/net/projects2/tianlab/dixi/cache/
 export CUDA_LAUNCH_BLOCKING=1
 
 # Paths
@@ -26,25 +23,26 @@ RESULT_DIR="reason/results"
 mkdir -p logs "$RESULT_DIR"
 
 # Sweep settings
-PRESS_NAME=("rkv")  # "full" "rkv" "h2o" "knorm" "snapkv" "streaming_llm"
+PRESS_NAME=("snapkv")  # "full" "rkv" "h2o" "knorm" "snapkv" "streaming_llm"
 MODELS=(
-    "meta-llama/Llama-3.1-8B-Instruct"  # ML
+    #"meta-llama/Llama-3.1-8B-Instruct"  # ML
     "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"  # DQ
     "nvidia/Llama-3.1-Nemotron-Nano-8B-v1"  # LN
     "deepseek-ai/DeepSeek-R1-Distill-Llama-8B"  # DL
-    "deepseek-ai/DeepSeek-R1-Distill-Qwen-14B"  # DQ
+    #"deepseek-ai/DeepSeek-R1-Distill-Qwen-14B"  # DQ
 )
 DATASETS=(
-  "gsm8k" "drop" "reclor" "folio"
+  "gsm8k"
 )
 CACHE_BUDGETS=(128 256 384 512)
 LAMBDA=0
 N_HASH_BUCKETS=8
+SNAPKV_WINDOW_SIZE=(16 32 128)
 
 NUM_SAMPLES=100
 RANDOM_SEEDS=(24 42 130)
-BLOCK_SIZE=50
-BLOCK_INDICES=(1 2)
+BLOCK_SIZE=20
+BLOCK_INDICES=(1 2 3 4 5)
 
 # =====================
 # Derived sizes
@@ -180,6 +178,7 @@ python "$SCRIPT_PATH" \
   --random_seed="$RANDOM_SEED" \
   --max_new_tokens="$MAX_NEW_TOKENS" \
   --n_hash_buckets="$N_HASH_BUCKETS" \
+  --snapkv_window_size="$SNAPKV_WINDOW_SIZE" \
   --lam="$LAMBDA" \
   --track_tokens=false \
   --measure_memory=false \

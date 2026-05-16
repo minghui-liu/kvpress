@@ -206,6 +206,7 @@ def evaluate(
     n_hash_buckets: int = 6,
     lam:float=0.1,
     n_bits: int = 4,
+    snapkv_window_size: int = 64,
     track_tokens: bool = False,
     track_buckets: bool = False,
     enable_qualitative_analysis: bool = False,
@@ -391,6 +392,9 @@ def evaluate(
         if press_name == "turboquant" and press is not None:
             press.n_bits = n_bits
             press.cache_budget = 0  # use n_bits directly, not budget-derived bits
+
+        if press_name in ("snapkv", "snapkv_press") and press is not None:
+            press.window_size = snapkv_window_size
 
         if press_name=="rkvlsh" and press is not None:
             press.n_hash_buckets=n_hash_buckets
