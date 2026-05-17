@@ -317,6 +317,11 @@ def evaluate(
             "__".join([dataset, data_dir if data_dir else "", model_name.replace("/", "--"), press_name, f"int{n_bits}", f"max_new_tokens{max_new_tokens}"])
             + ".jsonl"
         )
+    elif press_name in ("snapkv", "snapkv_press"):
+        save_filename = save_dir / (
+            "__".join([dataset, data_dir if data_dir else "", model_name.replace("/", "--"), press_name, f"budget{cache_budget}", f"window{snapkv_window_size}", f"max_new_tokens{max_new_tokens}"])
+            + ".jsonl"
+        )
     else:
         save_filename = save_dir / (
             "__".join([dataset, data_dir if data_dir else "", model_name.replace("/", "--"), press_name, f"budget{cache_budget}", f"max_new_tokens{max_new_tokens}"])
