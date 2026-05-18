@@ -5,16 +5,19 @@
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=16
 #SBATCH --ntasks=1
-#SBATCH --array=0-539
+#SBATCH --array=0-179
 #SBATCH --output=logs/%x_%A_%a.out
 #SBATCH --error=logs/%x_%A_%a.txt
 
 set -euo pipefail
 
-source /opt/conda/etc/profile.d/conda.sh
-conda activate py310
+# Env
+# conda init
+# conda activate py310
+source /home/dixi/.cache/pypoetry/virtualenvs/kvpress-CimsZS3I-py3.10/bin/activate
 
-export HF_HOME=/net/projects2/tianlab/dixi/cache/
+# Huggingface
+export HF_HOME=/net/projects2/litian-lab/dixi/cache/
 export CUDA_LAUNCH_BLOCKING=1
 
 # Paths
@@ -37,7 +40,7 @@ DATASETS=(
 CACHE_BUDGETS=(128 256 384 512)
 LAMBDA=0
 N_HASH_BUCKETS=8
-SNAPKV_WINDOW_SIZE=(16 32 128)
+SNAPKV_WINDOW_SIZE=(128)
 
 NUM_SAMPLES=100
 RANDOM_SEEDS=(24 42 130)
@@ -76,7 +79,8 @@ for MODEL_NAME in "${MODELS[@]}"; do
 done
 
 NUM_SPECS=${#SPEC_MODELS[@]}
-TOTAL=$((NUM_SPECS * NUM_SEEDS * NUM_BLOCKS))
+NUM_WINDOWS=${#SNAPKV_WINDOW_SIZE[@]}
+TOTAL=$((NUM_SPECS * NUM_SEEDS * NUM_BLOCKS * NUM_WINDOWS))
 
 TASK_ID=${SLURM_ARRAY_TASK_ID:-0}
 if [[ $TASK_ID -ge $TOTAL ]]; then
@@ -84,12 +88,14 @@ if [[ $TASK_ID -ge $TOTAL ]]; then
   exit 1
 fi
 
-# Map array index to (model, dataset, press_method, budget, seed, block)
+# Map array index to (spec, seed, block, window_size)
 combo=$TASK_ID
-spec_idx=$(( combo / (NUM_SEEDS * NUM_BLOCKS) ))
-rem=$(( combo % (NUM_SEEDS * NUM_BLOCKS) ))
-seed_idx=$(( rem / NUM_BLOCKS ))
-block_idx=$(( rem % NUM_BLOCKS ))
+spec_idx=$(( combo / (NUM_SEEDS * NUM_BLOCKS * NUM_WINDOWS) ))
+rem=$(( combo % (NUM_SEEDS * NUM_BLOCKS * NUM_WINDOWS) ))
+seed_idx=$(( rem / (NUM_BLOCKS * NUM_WINDOWS) ))
+rem=$(( rem % (NUM_BLOCKS * NUM_WINDOWS) ))
+block_idx=$(( rem / NUM_WINDOWS ))
+window_idx=$(( rem % NUM_WINDOWS ))
 
 MODEL_NAME=${SPEC_MODELS[$spec_idx]}
 DATASET=${SPEC_DATASETS[$spec_idx]}
@@ -97,6 +103,7 @@ PRESS_METHOD=${SPEC_PRESSES[$spec_idx]}
 CACHE_BUDGET=${SPEC_BUDGETS[$spec_idx]}
 RANDOM_SEED=${RANDOM_SEEDS[$seed_idx]}
 DATASET_BLOCK_INDEX=${BLOCK_INDICES[$block_idx]}
+WINDOW_SIZE=${SNAPKV_WINDOW_SIZE[$window_idx]}
 MODEL_FILE=${MODEL_NAME//\//--}
 
 # =====================
@@ -150,6 +157,8 @@ if [[ "$PRESS_METHOD" == "rkv" || "$PRESS_METHOD" == "rkvlsh" ]]; then
   file_stem="${DATASET}____${MODEL_FILE}__${PRESS_METHOD}__budget${CACHE_BUDGET}__hash_bucket${N_HASH_BUCKETS}__max_new_tokens${MAX_NEW_TOKENS}__lam${lambda_sanitized}__num_samples${NUM_SAMPLES}__block${DATASET_BLOCK_INDEX}_size${BLOCK_SIZE}__seed${RANDOM_SEED}__sampling"
 elif [[ "$PRESS_METHOD" == "turboquant" ]]; then
   file_stem="${DATASET}____${MODEL_FILE}__${PRESS_METHOD}__int${N_BITS}__max_new_tokens${MAX_NEW_TOKENS}__num_samples${NUM_SAMPLES}__block${DATASET_BLOCK_INDEX}_size${BLOCK_SIZE}__seed${RANDOM_SEED}__sampling"
+elif [[ "$PRESS_METHOD" == "snapkv" || "$PRESS_METHOD" == "snapkv_press" ]]; then
+  file_stem="${DATASET}____${MODEL_FILE}__${PRESS_METHOD}__budget${CACHE_BUDGET}__window${WINDOW_SIZE}__max_new_tokens${MAX_NEW_TOKENS}__num_samples${NUM_SAMPLES}__block${DATASET_BLOCK_INDEX}_size${BLOCK_SIZE}__seed${RANDOM_SEED}__sampling"
 else
   file_stem="${DATASET}____${MODEL_FILE}__${PRESS_METHOD}__budget${CACHE_BUDGET}__max_new_tokens${MAX_NEW_TOKENS}__num_samples${NUM_SAMPLES}__block${DATASET_BLOCK_INDEX}_size${BLOCK_SIZE}__seed${RANDOM_SEED}__sampling"
 fi
@@ -178,7 +187,7 @@ python "$SCRIPT_PATH" \
   --random_seed="$RANDOM_SEED" \
   --max_new_tokens="$MAX_NEW_TOKENS" \
   --n_hash_buckets="$N_HASH_BUCKETS" \
-  --snapkv_window_size="$SNAPKV_WINDOW_SIZE" \
+  --snapkv_window_size="$WINDOW_SIZE" \
   --lam="$LAMBDA" \
   --track_tokens=false \
   --measure_memory=false \
