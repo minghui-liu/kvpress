@@ -291,6 +291,44 @@ def evaluate(
     if device is None:
         device = "cuda:0" if torch.cuda.is_available() else "cpu"
 
+    def _default_tensor_device():
+        return "cuda:0" if torch.cuda.is_available() else "cpu"
+
+    def _device_map_entry_to_device(device_entry):
+        if isinstance(device_entry, int):
+            return f"cuda:{device_entry}"
+        if isinstance(device_entry, str):
+            if device_entry == "disk":
+                return None
+            if device_entry.isdigit():
+                return f"cuda:{device_entry}"
+            return device_entry
+        return None
+
+    def _resolve_tensor_device(model=None):
+        """Return a concrete torch device string for inputs and auxiliary tensors."""
+        if device != "auto":
+            return device
+
+        if model is not None and hasattr(model, "hf_device_map"):
+            for device_entry in model.hf_device_map.values():
+                resolved = _device_map_entry_to_device(device_entry)
+                if resolved is not None and resolved != "cpu":
+                    return resolved
+            for device_entry in model.hf_device_map.values():
+                resolved = _device_map_entry_to_device(device_entry)
+                if resolved is not None:
+                    return resolved
+
+        if model is not None and hasattr(model, "device"):
+            model_device = str(model.device)
+            if model_device != "meta":
+                return model_device
+
+        return _default_tensor_device()
+
+    tensor_device = _resolve_tensor_device()
+
     save_dir = Path(__file__).parent / "results"
     save_dir.mkdir(exist_ok=True)
     if "rkv" in press_name:
@@ -404,7 +442,7 @@ def evaluate(
         if press_name=="rkvlsh" and press is not None:
             press.n_hash_buckets=n_hash_buckets
             press.lam = lam
-            press.initialize_buckets(device=device)
+            press.initialize_buckets(device=tensor_device)
             # Enable bucket tracking if requested
             if track_buckets:
                 press.enable_bucket_tracking()
@@ -434,7 +472,7 @@ def evaluate(
                 seerattn_token_budget=cache_budget,
                 **attention_config
             )
-            model.to(device)
+            model.to(tensor_device)
         else:
             tokenizer = AutoTokenizer.from_pretrained(
                 model_name,
@@ -448,6 +486,7 @@ def evaluate(
                 trust_remote_code=True,
                 **attention_config
             )
+            tensor_device = _resolve_tensor_device(model)
         
         # Set pad token to eos token if not already set (required for generation)
         if tokenizer.pad_token is None:
@@ -478,7 +517,7 @@ def evaluate(
             gc.collect()
             
             input_text, gt_answer_text = formatter(example)
-            inputs = tokenizer(input_text, return_tensors="pt", truncation=True).to(device)
+            inputs = tokenizer(input_text, return_tensors="pt", truncation=True).to(tensor_device)
             if max_context_length is not None:
                 inputs = {k: v[:, :max_context_length] for k, v in inputs.items()}
             if max_new_tokens is None:
