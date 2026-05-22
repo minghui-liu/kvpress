@@ -18,7 +18,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer,AutoConfig
 try:
     from seer_attn import SeerDecodingQwen2ForCausalLM
 except ImportError:
-    SeerDecodingQwen3ForCausalLM = None
+    SeerDecodingQwen2ForCausalLM = None
 from kvpress import BasePress, KeyRerotationPress, PerLayerCompressionPress
 
 from utils import default_extractor
@@ -460,6 +460,11 @@ def evaluate(
             }
         
         if "SeerAttention" in model_name:
+            if SeerDecodingQwen2ForCausalLM is None:
+                raise ImportError(
+                    "SeerAttention model requested, but `seer_attn` is not installed "
+                    "or does not export SeerDecodingQwen2ForCausalLM."
+                )
             # SeerAttention models: Load config first, then tokenizer from base_model
             # This is the recommended approach per SeerAttention documentation
             config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
