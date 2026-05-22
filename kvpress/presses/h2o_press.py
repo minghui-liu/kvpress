@@ -34,6 +34,34 @@ class H2OPress(ScorerPress):
                 "Set output_attentions=True if attentions are needed in the output."
             )
         super().__post_init__()
+        self.acc_attn_by_layer = {}
+        self.n_tokens_in_sum_by_layer = {}
+
+    def reset_timing(self):
+        super().reset_timing()
+        self.acc_attn_by_layer = {}
+        self.n_tokens_in_sum_by_layer = {}
+
+    def _layer_idx(self, module: nn.Module) -> int:
+        return getattr(module, "layer_idx", 0)
+
+    def _layer_state_key(self, module: nn.Module) -> int:
+        layer_idx = getattr(module, "layer_idx", None)
+        return layer_idx if layer_idx is not None else id(module)
+
+    def _get_layer_state(self, module: nn.Module) -> tuple[torch.Tensor, torch.Tensor]:
+        layer_key = self._layer_state_key(module)
+        return self.acc_attn_by_layer[layer_key], self.n_tokens_in_sum_by_layer[layer_key]
+
+    def _set_layer_state(
+        self,
+        module: nn.Module,
+        acc_attn: torch.Tensor,
+        n_tokens_in_sum: torch.Tensor,
+    ):
+        layer_key = self._layer_state_key(module)
+        self.acc_attn_by_layer[layer_key] = acc_attn
+        self.n_tokens_in_sum_by_layer[layer_key] = n_tokens_in_sum
 
     def score(
         self,
@@ -47,7 +75,8 @@ class H2OPress(ScorerPress):
     ) -> torch.Tensor:
         assert attentions is not None, 'Set output_attentions=True and attn_implementation="eager" to use this hook'
         bsz, num_key_value_heads, n_tokens, _ = keys.shape
-        scores = self.acc_attn / self.n_tokens_in_sum
+        acc_attn, n_tokens_in_sum = self._get_layer_state(module)
+        scores = acc_attn / n_tokens_in_sum
         scores = scores.view(bsz, num_key_value_heads, -1, n_tokens).mean(2)
         return scores
     
@@ -70,14 +99,15 @@ class H2OPress(ScorerPress):
         n_kv_groups = module.num_key_value_groups
         n_kv_heads = n_heads // n_kv_groups
 
-        self.acc_attn = attentions.sum(2)
+        acc_attn = attentions.sum(2)
         # reshape attentions to bsz, n_kv_heads, n_kv_groups, q_len
-        self.acc_attn = self.acc_attn.view(bsz, -1, n_kv_groups, q_len)
+        acc_attn = acc_attn.view(bsz, -1, n_kv_groups, q_len)
         # average over the n_kv_groups dimension
-        self.acc_attn = self.acc_attn.mean(2) # bsz, n_kv_heads, q_len
+        acc_attn = acc_attn.mean(2) # bsz, n_kv_heads, q_len
 
-        self.n_tokens_in_sum = torch.arange(q_len, 0, -1).to(attentions.device, attentions.dtype)
-        self.n_tokens_in_sum = self.n_tokens_in_sum.unsqueeze(0).unsqueeze(0).expand(bsz, n_kv_heads, -1) # bsz, n_kv_heads, q_len
+        n_tokens_in_sum = torch.arange(q_len, 0, -1).to(attentions.device, attentions.dtype)
+        n_tokens_in_sum = n_tokens_in_sum.unsqueeze(0).unsqueeze(0).expand(bsz, n_kv_heads, -1) # bsz, n_kv_heads, q_len
+        self._set_layer_state(module, acc_attn, n_tokens_in_sum)
 
         if self.cache_budget >= q_len:
             return keys, values
@@ -94,8 +124,10 @@ class H2OPress(ScorerPress):
 
         # Prune acc attention weights and n_tokens_in_sum
         # expand second dimension from n_kv_heads to num_heads
-        self.acc_attn = self.acc_attn.gather(2, indices).contiguous()
-        self.n_tokens_in_sum = self.n_tokens_in_sum.gather(2, indices).contiguous()
+        acc_attn, n_tokens_in_sum = self._get_layer_state(module)
+        acc_attn = acc_attn.gather(2, indices).contiguous()
+        n_tokens_in_sum = n_tokens_in_sum.gather(2, indices).contiguous()
+        self._set_layer_state(module, acc_attn, n_tokens_in_sum)
 
         return keys, values
 
@@ -105,7 +137,8 @@ class H2OPress(ScorerPress):
             return keys, values
     
         # add to the accumulated attention weights
-        n_existing = self.acc_attn.shape[2]
+        acc_attn, n_tokens_in_sum = self._get_layer_state(module)
+        n_existing = acc_attn.shape[2]
         bsz, n_heads, _, q_len = attentions.shape
 
         n_kv_groups = module.num_key_value_groups
@@ -116,11 +149,10 @@ class H2OPress(ScorerPress):
         new_acc_attn = new_acc_attn.view(bsz, -1, n_kv_groups, q_len)
         # average over the n_kv_groups dimension
         new_acc_attn = new_acc_attn.mean(2) # bsz, n_kv_heads, q_len
-        new_acc_attn[:, :, :n_existing] += self.acc_attn
+        new_acc_attn[:, :, :n_existing] += acc_attn
         new_n_tokens_in_sum = torch.ones(bsz, n_kv_heads, q_len, device=attentions.device, dtype=attentions.dtype)
-        new_n_tokens_in_sum[:, :, :n_existing] += self.n_tokens_in_sum
-        self.acc_attn = new_acc_attn
-        self.n_tokens_in_sum = new_n_tokens_in_sum
+        new_n_tokens_in_sum[:, :, :n_existing] += n_tokens_in_sum
+        self._set_layer_state(module, new_acc_attn, new_n_tokens_in_sum)
 
         kv_len = keys.shape[2]
         layer_idx = getattr(module, "layer_idx", 0)
@@ -162,8 +194,10 @@ class H2OPress(ScorerPress):
         values = values.gather(2, kv_indices).contiguous()
 
         # Prune acc attention weights and n_tokens_in_sum
-        self.acc_attn = self.acc_attn.gather(2, indices).contiguous()
-        self.n_tokens_in_sum = self.n_tokens_in_sum.gather(2, indices).contiguous()
+        acc_attn, n_tokens_in_sum = self._get_layer_state(module)
+        acc_attn = acc_attn.gather(2, indices).contiguous()
+        n_tokens_in_sum = n_tokens_in_sum.gather(2, indices).contiguous()
+        self._set_layer_state(module, acc_attn, n_tokens_in_sum)
 
         return keys, values
 
