@@ -50,6 +50,7 @@ from kvpress import (
     RKVLSHPress,
     H2OPress,
     SnapKVPress,
+    PyramidKVPress,
     NonePress,
     TurboQuantPress,
 )
@@ -128,6 +129,7 @@ PRESS_DICT = {
     "streaming_llm": StreamingLLMPress(),
     "snapkv": SnapKVPress(),
     "snapkv_press": SnapKVPress(),  # Alias for snapkv
+    "pyramidkv": PyramidKVPress(),
     "rkv": RKVPress(),
     "rkvlsh": RKVLSHPress(),
     "full": FullPress(),
@@ -355,7 +357,7 @@ def evaluate(
             "__".join([dataset, data_dir if data_dir else "", model_name.replace("/", "--"), press_name, f"int{n_bits}", f"max_new_tokens{max_new_tokens}"])
             + ".jsonl"
         )
-    elif press_name in ("snapkv", "snapkv_press"):
+    elif press_name in ("snapkv", "snapkv_press", "pyramidkv"):
         save_filename = save_dir / (
             "__".join([dataset, data_dir if data_dir else "", model_name.replace("/", "--"), press_name, f"budget{cache_budget}", f"window{snapkv_window_size}", f"max_new_tokens{max_new_tokens}"])
             + ".jsonl"
@@ -420,7 +422,9 @@ def evaluate(
             evaluated_sample_end = block_end
 
         # Load press
-        assert press_name in PRESS_DICT
+        if press_name not in PRESS_DICT:
+            available_presses = ", ".join(sorted(PRESS_DICT))
+            raise ValueError(f"Unknown press_name '{press_name}'. Available presses: {available_presses}")
         press = PRESS_DICT[press_name]
         formatter = FORMATTER_DICT[dataset]
         extractor = EXTRACTOR_DICT[dataset] 
@@ -436,7 +440,7 @@ def evaluate(
             press.n_bits = n_bits
             press.cache_budget = 0  # use n_bits directly, not budget-derived bits
 
-        if press_name in ("snapkv", "snapkv_press") and press is not None:
+        if press_name in ("snapkv", "snapkv_press", "pyramidkv") and press is not None:
             press.window_size = snapkv_window_size
 
         if press_name=="rkvlsh" and press is not None:

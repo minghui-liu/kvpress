@@ -38,6 +38,11 @@ class PyramidKVPress(SnapKVPress):
     kernel_size: int = 5
     beta: int = 20  # a hyperparameter to adjust the pyramid’s shape
 
+    def _target_budget(self, q_len: int) -> int:
+        if self.cache_budget > 0:
+            return min(self.cache_budget, q_len)
+        return round(q_len * (1 - self.compression_ratio))
+
     def get_layer_budget(
         self,
         module: nn.Module,
@@ -48,8 +53,12 @@ class PyramidKVPress(SnapKVPress):
         """
         assert self.beta >= 1, "Beta should >= 1"
 
+        target_budget = self._target_budget(q_len)
+        if target_budget <= 0 or target_budget >= q_len:
+            return q_len
+
         # Ensure the total budget meets the compression_ratio requirements
-        max_capacity_prompt = self.window_size + q_len * (1 - self.compression_ratio)
+        max_capacity_prompt = self.window_size + target_budget
 
         min_num = (max_capacity_prompt - self.window_size) / self.beta
         max_num = (max_capacity_prompt - self.window_size) * 2 - min_num
@@ -60,30 +69,38 @@ class PyramidKVPress(SnapKVPress):
 
         if not (q_len >= max_num >= min_num >= self.window_size):
             # Fall back to SnapKV
-            return round(q_len * (1 - self.compression_ratio))
+            return target_budget
 
         steps = (max_num - min_num) / (module.config.num_hidden_layers - 1)
-        return round(max_num - module.layer_idx * steps)
+        return max(1, min(q_len, round(max_num - module.layer_idx * steps)))
 
-    def compress(
+    def _compress_with_layer_budget(
         self,
         module: nn.Module,
         hidden_states: torch.Tensor,
         keys: torch.Tensor,
         values: torch.Tensor,
         attentions: torch.Tensor,
+        is_prefill: bool,
         kwargs: dict,
     ) -> tuple[torch.Tensor, torch.Tensor]:
 
-        if self.compression_ratio == 0:
+        if self.cache_budget <= 0 and self.compression_ratio == 0:
+            return keys, values
+
+        kv_len = keys.shape[2]
+        if self.get_layer_budget(module, kv_len) >= kv_len:
             return keys, values
 
         # Compute scores
-        scores = self.score(module, hidden_states, keys, values, attentions, kwargs)
+        score_result = self.score(module, hidden_states, keys, values, attentions, is_prefill, kwargs)
+        if isinstance(score_result, tuple):
+            scores = score_result[0]
+        else:
+            scores = score_result
 
         # Get indices of KV pairs with the lowest scores
-        q_len = hidden_states.shape[1]
-        n_kept = self.get_layer_budget(module, q_len)
+        n_kept = self.get_layer_budget(module, kv_len)
         indices = scores.topk(n_kept, dim=-1).indices
         indices = indices.unsqueeze(-1).expand(-1, -1, -1, module.head_dim)
 
@@ -92,3 +109,25 @@ class PyramidKVPress(SnapKVPress):
         values = values.gather(2, indices).contiguous()
 
         return keys, values
+
+    def compress_prefilling(
+        self,
+        module: nn.Module,
+        hidden_states: torch.Tensor,
+        keys: torch.Tensor,
+        values: torch.Tensor,
+        attentions: torch.Tensor,
+        kwargs: dict,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        return self._compress_with_layer_budget(module, hidden_states, keys, values, attentions, True, kwargs)
+
+    def compress_decoding(
+        self,
+        module: nn.Module,
+        hidden_states: torch.Tensor,
+        keys: torch.Tensor,
+        values: torch.Tensor,
+        attentions: torch.Tensor,
+        kwargs: dict,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        return self._compress_with_layer_budget(module, hidden_states, keys, values, attentions, False, kwargs)
