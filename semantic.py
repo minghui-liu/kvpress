@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import glob
 import json
 import math
 import re
@@ -42,6 +41,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max_length", type=int, default=2048, help="Max tokens per response for embedding.")
     parser.add_argument("--device", default=None, help="Torch device. Defaults to cuda if available, else cpu.")
     parser.add_argument("--trust_remote_code", action="store_true", help="Pass trust_remote_code=True to HF loaders.")
+    parser.add_argument(
+        "--skip_missing",
+        action="store_true",
+        help="Write a skipped summary and exit 0 when matching files/pairs are missing.",
+    )
     return parser.parse_args()
 
 
@@ -70,15 +74,88 @@ def metadata_from_path(path: Path) -> dict[str, Any]:
     return metadata
 
 
+def parse_result_filename(path: Path) -> dict[str, Any] | None:
+    if path.suffix != ".jsonl":
+        return None
+
+    parts = path.stem.split("__")
+    if len(parts) < 4:
+        return None
+
+    method_names = METHODS | {"full", "pyramidkv", "turboquant", "rkvlsh", "none"}
+    method_idx = None
+    for idx, part in enumerate(parts):
+        if part in method_names:
+            method_idx = idx
+            break
+
+    if method_idx is None or method_idx == 0:
+        return None
+
+    model_file = parts[method_idx - 1]
+    data_dir = "__".join(parts[1 : method_idx - 1])
+    metadata = metadata_from_path(path)
+    metadata.pop("path", None)
+    info = {
+        "dataset": parts[0],
+        "data_dir": data_dir,
+        "model_file": model_file,
+        "method": parts[method_idx],
+        "path": path,
+    }
+    info.update(metadata)
+    return info
+
+
 def find_files(results_dir: Path, dataset: str, model_name: str, method_name: str, budget: int | None) -> list[Path]:
     model_file = model_to_file_name(model_name)
-    pattern = str(results_dir / f"{dataset}*__{model_file}__{method_name}__*.jsonl")
-    files = [Path(path) for path in glob.glob(pattern)]
-
-    if budget is not None and method_name != "full":
-        files = [path for path in files if f"__budget{budget}__" in path.name]
-
+    files = []
+    for path in results_dir.glob("*.jsonl"):
+        info = parse_result_filename(path)
+        if info is None:
+            continue
+        if info["dataset"] != dataset:
+            continue
+        if info["model_file"] != model_file:
+            continue
+        if info["method"] != method_name:
+            continue
+        if budget is not None and method_name != "full" and info.get("budget") != budget:
+            continue
+        files.append(path)
     return sorted(files)
+
+
+def discovery_debug(results_dir: Path, dataset: str, model_name: str, method_name: str, budget: int | None) -> dict[str, Any]:
+    model_file = model_to_file_name(model_name)
+    all_jsonl = list(results_dir.glob("*.jsonl")) if results_dir.exists() else []
+    parsed = [info for path in all_jsonl if (info := parse_result_filename(path)) is not None]
+    same_dataset = [info for info in parsed if info["dataset"] == dataset]
+    same_model = [info for info in same_dataset if info["model_file"] == model_file]
+    same_method = [info for info in same_model if info["method"] == method_name]
+    same_budget = [
+        info
+        for info in same_method
+        if budget is None or method_name == "full" or info.get("budget") == budget
+    ]
+    return {
+        "results_dir_exists": results_dir.exists(),
+        "total_jsonl_files": len(all_jsonl),
+        "parsed_jsonl_files": len(parsed),
+        "same_dataset_files": len(same_dataset),
+        "same_dataset_model_files": len(same_model),
+        "same_dataset_model_method_files": len(same_method),
+        "same_dataset_model_method_budget_files": len(same_budget),
+        "expected_dataset": dataset,
+        "expected_model_file": model_file,
+        "expected_method": method_name,
+        "expected_budget": budget,
+        "sample_same_dataset_model_methods": sorted({info["method"] for info in same_model})[:20],
+        "sample_same_dataset_model_method_budgets": sorted(
+            {info.get("budget") for info in same_method if info.get("budget") is not None}
+        )[:20],
+        "sample_same_dataset_model_files": [info["path"].name for info in same_model[:10]],
+    }
 
 
 def load_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -182,13 +259,18 @@ def mean(values: list[float]) -> float:
     return sum(values) / len(values) if values else math.nan
 
 
+def write_summary(summary: dict[str, Any], output: str | None) -> None:
+    print(json.dumps(summary, indent=2))
+    if output:
+        output_path = Path(output)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+
+
 def main() -> None:
     args = parse_args()
 
-    import torch
-
     results_dir = Path(args.results_dir).expanduser()
-    device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
 
     # Method files are filtered by the requested cache budget, but full files are
     # intentionally not budget-filtered. A full run named with budget128 can be
@@ -197,11 +279,53 @@ def main() -> None:
     full_files = find_files(results_dir, args.dataset, args.model_name, "full", None)
 
     if not method_files:
+        summary = {
+            "status": "skipped",
+            "skip_reason": "missing_method_files",
+            "dataset": args.dataset,
+            "model_name": args.model_name,
+            "method_name": args.method_name,
+            "budget": args.budget,
+            "results_dir": str(results_dir),
+            "num_method_files": 0,
+            "num_full_files": len(full_files),
+            "num_pairs": 0,
+            "method_discovery_debug": discovery_debug(
+                results_dir, args.dataset, args.model_name, args.method_name, args.budget
+            ),
+            "full_discovery_debug": discovery_debug(
+                results_dir, args.dataset, args.model_name, "full", None
+            ),
+        }
+        if args.skip_missing:
+            write_summary(summary, args.output)
+            return
         raise FileNotFoundError(
             f"No {args.method_name} JSONL files found for dataset={args.dataset}, "
             f"model={args.model_name}, budget={args.budget}, results_dir={results_dir}"
         )
     if not full_files:
+        summary = {
+            "status": "skipped",
+            "skip_reason": "missing_full_files",
+            "dataset": args.dataset,
+            "model_name": args.model_name,
+            "method_name": args.method_name,
+            "budget": args.budget,
+            "results_dir": str(results_dir),
+            "num_method_files": len(method_files),
+            "num_full_files": 0,
+            "num_pairs": 0,
+            "method_discovery_debug": discovery_debug(
+                results_dir, args.dataset, args.model_name, args.method_name, args.budget
+            ),
+            "full_discovery_debug": discovery_debug(
+                results_dir, args.dataset, args.model_name, "full", None
+            ),
+        }
+        if args.skip_missing:
+            write_summary(summary, args.output)
+            return
         raise FileNotFoundError(
             f"No full JSONL files found for dataset={args.dataset}, model={args.model_name}, results_dir={results_dir}"
         )
@@ -237,7 +361,30 @@ def main() -> None:
             )
 
     if not pairs:
+        summary = {
+            "status": "skipped",
+            "skip_reason": "no_matching_same_seed_records",
+            "dataset": args.dataset,
+            "model_name": args.model_name,
+            "method_name": args.method_name,
+            "budget": args.budget,
+            "results_dir": str(results_dir),
+            "num_method_files": len(method_files),
+            "num_full_files": len(full_files),
+            "full_budget_filter": None,
+            "num_matched_method_files": 0,
+            "num_pairs": 0,
+            "missing_method_files_without_matching_full_seed": missing_files,
+            "missing_records_within_matched_files": missing_records,
+        }
+        if args.skip_missing:
+            write_summary(summary, args.output)
+            return
         raise RuntimeError("No matching response pairs found between method and full files.")
+
+    import torch
+
+    device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
 
     embedder = ResponseEmbedder(
         args.model_name,
@@ -282,11 +429,7 @@ def main() -> None:
         "by_file": {path: {"avg": mean(vals), "num_pairs": len(vals)} for path, vals in sorted(by_file.items())},
     }
 
-    print(json.dumps(summary, indent=2))
-    if args.output:
-        output_path = Path(args.output)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+    write_summary(summary, args.output)
 
 
 if __name__ == "__main__":
