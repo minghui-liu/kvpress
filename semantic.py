@@ -111,18 +111,21 @@ def file_pair_key(path: Path) -> tuple[int | None, int | None, int | None]:
     )
 
 
-def load_full_indexes(full_files: list[Path]) -> dict[tuple[int | None, int | None, int | None], dict[str, str]]:
-    by_file_key: dict[tuple[int | None, int | None, int | None], dict[str, str]] = {}
+def seed_key(path: Path) -> int | None:
+    return metadata_from_path(path).get("seed")
+
+
+def load_full_indexes(full_files: list[Path]) -> dict[int | None, dict[str, str]]:
+    by_seed: dict[int | None, dict[str, str]] = defaultdict(dict)
 
     for path in full_files:
-        local_index = {}
+        current_seed = seed_key(path)
         for record in load_jsonl(path):
             key = sample_key(record)
             response = str(record.get("response", ""))
-            local_index[key] = response
-        by_file_key[file_pair_key(path)] = local_index
+            by_seed[current_seed].setdefault(key, response)
 
-    return by_file_key
+    return by_seed
 
 
 class ResponseEmbedder:
@@ -200,21 +203,21 @@ def main() -> None:
             f"No full JSONL files found for dataset={args.dataset}, model={args.model_name}, results_dir={results_dir}"
         )
 
-    full_by_file_key = load_full_indexes(full_files)
+    full_by_seed = load_full_indexes(full_files)
 
     pairs: list[dict[str, Any]] = []
     missing_files = 0
     missing_records = 0
     for method_file in method_files:
-        pair_key = file_pair_key(method_file)
-        local_full = full_by_file_key.get(pair_key)
-        if local_full is None:
+        method_metadata = metadata_from_path(method_file)
+        current_seed = method_metadata.get("seed")
+        seed_full = full_by_seed.get(current_seed)
+        if seed_full is None:
             missing_files += 1
             continue
-        method_metadata = metadata_from_path(method_file)
         for record in load_jsonl(method_file):
             key = sample_key(record)
-            full_response = local_full.get(key)
+            full_response = seed_full.get(key)
             if full_response is None:
                 missing_records += 1
                 continue
@@ -265,7 +268,7 @@ def main() -> None:
         "num_full_files": len(full_files),
         "num_matched_method_files": len({pair["method_file"] for pair in pairs}),
         "num_pairs": len(pairs),
-        "missing_method_files_without_matching_full_seed_block": missing_files,
+        "missing_method_files_without_matching_full_seed": missing_files,
         "missing_records_within_matched_files": missing_records,
         "avg_semantic_similarity": mean(similarities),
         "min_semantic_similarity": min(similarities),
