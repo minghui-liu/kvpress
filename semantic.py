@@ -190,6 +190,9 @@ def main() -> None:
     results_dir = Path(args.results_dir).expanduser()
     device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
 
+    # Method files are filtered by the requested cache budget, but full files are
+    # intentionally not budget-filtered. A full run named with budget128 can be
+    # used as the baseline for rkv/h2o/etc. budget128, budget256, budget384, etc.
     method_files = find_files(results_dir, args.dataset, args.model_name, args.method_name, args.budget)
     full_files = find_files(results_dir, args.dataset, args.model_name, "full", None)
 
@@ -266,6 +269,7 @@ def main() -> None:
         "device": device,
         "num_method_files": len(method_files),
         "num_full_files": len(full_files),
+        "full_budget_filter": None,
         "num_matched_method_files": len({pair["method_file"] for pair in pairs}),
         "num_pairs": len(pairs),
         "missing_method_files_without_matching_full_seed": missing_files,
