@@ -171,12 +171,26 @@ def load_jsonl(path: Path) -> list[dict[str, Any]]:
     return records
 
 
-def sample_key(record: dict[str, Any]) -> str:
+def sample_keys(record: dict[str, Any], file_metadata: dict[str, Any] | None = None) -> list[str]:
+    keys = []
     for key in ("unique_id", "id", "input_text", "question", "problem"):
         value = record.get(key)
         if value is not None:
-            return f"{key}:{value}"
-    return f"line:{record['_line_index']}"
+            keys.append(f"{key}:{value}")
+
+    if file_metadata is not None and file_metadata.get("block_index") is not None:
+        block_index = int(file_metadata["block_index"])
+        block_size = int(file_metadata["block_size"])
+        global_index = (block_index - 1) * block_size + int(record["_line_index"])
+        keys.append(f"global_index:{global_index}")
+    else:
+        keys.append(f"line:{record['_line_index']}")
+
+    return keys
+
+
+def sample_key(record: dict[str, Any], file_metadata: dict[str, Any] | None = None) -> str:
+    return sample_keys(record, file_metadata)[0]
 
 
 def file_pair_key(path: Path) -> tuple[int | None, int | None, int | None]:
@@ -196,11 +210,12 @@ def load_full_indexes(full_files: list[Path]) -> dict[int | None, dict[str, str]
     by_seed: dict[int | None, dict[str, str]] = defaultdict(dict)
 
     for path in full_files:
-        current_seed = seed_key(path)
+        file_metadata = metadata_from_path(path)
+        current_seed = file_metadata.get("seed")
         for record in load_jsonl(path):
-            key = sample_key(record)
             response = str(record.get("response", ""))
-            by_seed[current_seed].setdefault(key, response)
+            for key in sample_keys(record, file_metadata):
+                by_seed[current_seed].setdefault(key, response)
 
     return by_seed
 
@@ -335,6 +350,7 @@ def main() -> None:
     pairs: list[dict[str, Any]] = []
     missing_files = 0
     missing_records = 0
+    matched_key_counts: dict[str, int] = defaultdict(int)
     for method_file in method_files:
         method_metadata = metadata_from_path(method_file)
         current_seed = method_metadata.get("seed")
@@ -343,14 +359,21 @@ def main() -> None:
             missing_files += 1
             continue
         for record in load_jsonl(method_file):
-            key = sample_key(record)
-            full_response = seed_full.get(key)
+            record_keys = sample_keys(record, method_metadata)
+            matched_key = None
+            full_response = None
+            for key in record_keys:
+                full_response = seed_full.get(key)
+                if full_response is not None:
+                    matched_key = key
+                    matched_key_counts[key.split(":", 1)[0]] += 1
+                    break
             if full_response is None:
                 missing_records += 1
                 continue
             pairs.append(
                 {
-                    "key": key,
+                    "key": matched_key,
                     "method_response": str(record.get("response", "")),
                     "full_response": full_response,
                     "seed": method_metadata.get("seed"),
@@ -376,6 +399,7 @@ def main() -> None:
             "num_pairs": 0,
             "missing_method_files_without_matching_full_seed": missing_files,
             "missing_records_within_matched_files": missing_records,
+            "matched_key_counts": dict(sorted(matched_key_counts.items())),
         }
         if args.skip_missing:
             write_summary(summary, args.output)
@@ -421,6 +445,7 @@ def main() -> None:
         "num_pairs": len(pairs),
         "missing_method_files_without_matching_full_seed": missing_files,
         "missing_records_within_matched_files": missing_records,
+        "matched_key_counts": dict(sorted(matched_key_counts.items())),
         "avg_semantic_similarity": mean(similarities),
         "min_semantic_similarity": min(similarities),
         "max_semantic_similarity": max(similarities),
