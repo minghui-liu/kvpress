@@ -81,21 +81,31 @@ def combine_throughput(metrics_df: pd.DataFrame, eff_df: pd.DataFrame, dataset: 
 
 
 def plot_case(metrics_df: pd.DataFrame, eff_df: pd.DataFrame, max_tokens: int, output_path: Path) -> None:
-    # Two subplots in 1x2 grid: math500-llama, math500-qwen
-    fig, axes = plt.subplots(1, 2, figsize=(20, 4))
+    # Four subplots in 2x2 grid: Math500 on top, AIME24 on bottom.
+    fig, axes = plt.subplots(2, 2, figsize=(22, 8.5))
     combos = [
-        ("math500", "deepseek-ai--DeepSeek-R1-Distill-Llama-8B"),
-        ("math500", "deepseek-ai--DeepSeek-R1-Distill-Qwen-14B"),
+        ("math500", "deepseek-ai--DeepSeek-R1-Distill-Llama-8B", max_tokens),
+        ("math500", "deepseek-ai--DeepSeek-R1-Distill-Qwen-14B", max_tokens),
+        (
+            "aime24",
+            "deepseek-ai--DeepSeek-R1-Distill-Llama-8B",
+            32768 if max_tokens != 2048 else 2048,
+        ),
+        (
+            "aime24",
+            "deepseek-ai--DeepSeek-R1-Distill-Qwen-14B",
+            32768 if max_tokens != 2048 else 2048,
+        ),
     ]
 
-    for ax, (dataset, model) in zip(axes, combos):
+    for ax, (dataset, model, current_max_tokens) in zip(axes.flat, combos):
         combined = combine_throughput(
             metrics_df,
             eff_df,
             dataset,
             model,
-            max_tokens=max_tokens,
-            large=(max_tokens != 2048),
+            max_tokens=current_max_tokens,
+            large=(current_max_tokens != 2048),
         )
         label_map = {"rkv": "RKV", "rkvlsh": "RKV-LSH", "full": "Full"}
         style_map = {"rkv": ("tab:orange", "--"), "rkvlsh": ("tab:blue", "-"), "full": ("tab:green", ":")}
@@ -109,11 +119,11 @@ def plot_case(metrics_df: pd.DataFrame, eff_df: pd.DataFrame, max_tokens: int, o
         ax.set_xlabel("Cache budget", fontsize=28, fontweight="bold")
         ax.tick_params(axis="both", which="major", labelsize=26)
         ax.grid(True, linestyle=":", alpha=0.5, linewidth=1.3)
-    axes[0].set_ylabel("Throughput\n(tokens/s)", fontsize=28, fontweight="bold")
-    axes[1].legend(loc="best", fontsize=26, framealpha=0.95, edgecolor="black", fancybox=True)
+    axes[0, 0].set_ylabel("Throughput\n(tokens/s)", fontsize=28, fontweight="bold")
+    axes[1, 1].legend(loc="best", fontsize=26, framealpha=0.95, edgecolor="black", fancybox=True)
     fig.tight_layout()
     plt.subplots_adjust(
-        left=0.12, bottom=0.12, right=0.94, top=0.85, wspace=0.30
+        left=0.12, bottom=0.11, right=0.995, top=0.90, hspace=0.70, wspace=0.28
     )
     pdf_path = output_path.with_suffix(".pdf")
     fig.savefig(pdf_path)

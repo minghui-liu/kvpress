@@ -109,8 +109,8 @@ def plot_single_ax(ax, model_name, data_dict):
 
 
 def main():
-    fig = plt.figure(figsize=(7, 9))
-    gs = gridspec.GridSpec(2, 2, height_ratios=[1, 1], hspace=0.3, wspace=0.2)
+    fig = plt.figure(figsize=(8, 6))
+    gs = gridspec.GridSpec(2, 2, height_ratios=[1, 1])
 
     model_names = list(data.keys())
     axes = []
@@ -142,7 +142,14 @@ def main():
         columnspacing=1.5
     )
 
-    plt.tight_layout(rect=(0, 0.05, 1, 1))
+    fig.subplots_adjust(
+        left=0.12,
+        right=0.98,
+        top=0.94,
+        bottom=0.16,
+        hspace=0.38,
+        wspace=0.22,
+    )
 
     out_file = "budget_vs_output_reproduced.pdf"
     plt.savefig(out_file, bbox_inches='tight')

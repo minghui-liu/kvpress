@@ -130,6 +130,61 @@ def plot_case(metrics_df: pd.DataFrame, eff_df: pd.DataFrame, max_tokens: int, o
     print(f"Saved plot -> {pdf_path}")
 
 
+def plot_case_2048(metrics_df: pd.DataFrame, eff_df: pd.DataFrame, output_path: Path) -> None:
+    # Four subplots in 2x2 grid, preserving the 10x4 subplot footprint used by plot_case.
+    fig, axes = plt.subplots(2, 2, figsize=(22, 8.5))
+    combos = [
+        ("math500", "deepseek-ai--DeepSeek-R1-Distill-Llama-8B", 2048),
+        ("math500", "deepseek-ai--DeepSeek-R1-Distill-Qwen-14B", 2048),
+        ("aime24", "deepseek-ai--DeepSeek-R1-Distill-Llama-8B", 32768),
+        ("aime24", "deepseek-ai--DeepSeek-R1-Distill-Qwen-14B", 32768),
+    ]
+
+    label_map = {"rkv": "RKV", "rkvlsh": "RKV-LSH"}
+    for ax, (dataset, model, max_tokens) in zip(axes.flat, combos):
+        saved = compute_memory_saved(
+            metrics_df,
+            eff_df,
+            dataset,
+            model,
+            max_tokens=max_tokens,
+            large=False,
+        )
+        for method, color in [("rkv", "tab:orange"), ("rkvlsh", "tab:blue")]:
+            budgets = sorted(saved[method].keys())
+            values = [saved[method][b] for b in budgets]
+            ax.plot(
+                budgets,
+                values,
+                marker="o",
+                label=label_map[method],
+                color=color,
+                linestyle="--" if method == "rkv" else "-",
+                linewidth=3,
+                markersize=13,
+            )
+        ax.set_title(
+            f"{DISPLAY_DATASET[dataset]} • {MODEL_LABELS[model]}",
+            fontsize=28,
+            fontweight="bold",
+            pad=10,
+        )
+        ax.set_xlabel("Cache budget", fontsize=28, fontweight="bold")
+        ax.tick_params(axis="both", which="major", labelsize=26)
+        ax.grid(True, linestyle=":", alpha=0.5, linewidth=1.3)
+
+    axes[0, 0].set_ylabel("Memory Saved\n(MB)", fontsize=28, fontweight="bold")
+    axes[1, 0].legend(loc="best", fontsize=26, framealpha=0.95, edgecolor="black", fancybox=True)
+
+    fig.tight_layout()
+    plt.subplots_adjust(
+        left=0.08, bottom=0.11, right=0.995, top=0.90, hspace=0.70, wspace=0.28
+    )
+    pdf_path = output_path.with_suffix(".pdf")
+    fig.savefig(pdf_path)
+    print(f"Saved plot -> {pdf_path}")
+
+
 def main() -> None:
     if not METRICS_PATH.exists():
         raise FileNotFoundError(f"Missing {METRICS_PATH}")
@@ -144,6 +199,11 @@ def main() -> None:
         eff_df,
         max_tokens=16384,  # for math500; aime24 handled as 32768 in helper
         output_path=Path("memory_saved_large.png"),
+    )
+    plot_case_2048(
+        metrics_df,
+        eff_df,
+        output_path=Path("memory_saved_2048.png"),
     )
 
 
