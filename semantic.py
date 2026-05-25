@@ -34,7 +34,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--results_dir",
         default=str(DEFAULT_RESULTS_DIR),
-        help="Directory containing experiment JSONL files. Use ~/Downloads/results locally if needed.",
+        help="Directory containing compressed-method experiment JSONL files.",
+    )
+    parser.add_argument(
+        "--full_results_dir",
+        default=None,
+        help=(
+            "Optional directory containing full-baseline JSONL files. Defaults to --results_dir. "
+            "Use this when method and full files are stored in different result directories."
+        ),
     )
     parser.add_argument("--output", default=None, help="Optional path to write the summary JSON.")
     parser.add_argument("--batch_size", type=int, default=8, help="Embedding batch size.")
@@ -286,12 +294,13 @@ def main() -> None:
     args = parse_args()
 
     results_dir = Path(args.results_dir).expanduser()
+    full_results_dir = Path(args.full_results_dir).expanduser() if args.full_results_dir else results_dir
 
     # Method files are filtered by the requested cache budget, but full files are
     # intentionally not budget-filtered. A full run named with budget128 can be
     # used as the baseline for rkv/h2o/etc. budget128, budget256, budget384, etc.
     method_files = find_files(results_dir, args.dataset, args.model_name, args.method_name, args.budget)
-    full_files = find_files(results_dir, args.dataset, args.model_name, "full", None)
+    full_files = find_files(full_results_dir, args.dataset, args.model_name, "full", None)
 
     if not method_files:
         summary = {
@@ -302,6 +311,7 @@ def main() -> None:
             "method_name": args.method_name,
             "budget": args.budget,
             "results_dir": str(results_dir),
+            "full_results_dir": str(full_results_dir),
             "num_method_files": 0,
             "num_full_files": len(full_files),
             "num_pairs": 0,
@@ -309,7 +319,7 @@ def main() -> None:
                 results_dir, args.dataset, args.model_name, args.method_name, args.budget
             ),
             "full_discovery_debug": discovery_debug(
-                results_dir, args.dataset, args.model_name, "full", None
+                full_results_dir, args.dataset, args.model_name, "full", None
             ),
         }
         if args.skip_missing:
@@ -328,6 +338,7 @@ def main() -> None:
             "method_name": args.method_name,
             "budget": args.budget,
             "results_dir": str(results_dir),
+            "full_results_dir": str(full_results_dir),
             "num_method_files": len(method_files),
             "num_full_files": 0,
             "num_pairs": 0,
@@ -335,14 +346,15 @@ def main() -> None:
                 results_dir, args.dataset, args.model_name, args.method_name, args.budget
             ),
             "full_discovery_debug": discovery_debug(
-                results_dir, args.dataset, args.model_name, "full", None
+                full_results_dir, args.dataset, args.model_name, "full", None
             ),
         }
         if args.skip_missing:
             write_summary(summary, args.output)
             return
         raise FileNotFoundError(
-            f"No full JSONL files found for dataset={args.dataset}, model={args.model_name}, results_dir={results_dir}"
+            f"No full JSONL files found for dataset={args.dataset}, model={args.model_name}, "
+            f"full_results_dir={full_results_dir}"
         )
 
     full_by_seed = load_full_indexes(full_files)
@@ -350,15 +362,21 @@ def main() -> None:
     pairs: list[dict[str, Any]] = []
     missing_files = 0
     missing_records = 0
+    method_records_seen = 0
     matched_key_counts: dict[str, int] = defaultdict(int)
+    missing_file_examples: list[str] = []
+    missing_record_examples: list[dict[str, Any]] = []
     for method_file in method_files:
         method_metadata = metadata_from_path(method_file)
         current_seed = method_metadata.get("seed")
         seed_full = full_by_seed.get(current_seed)
         if seed_full is None:
             missing_files += 1
+            if len(missing_file_examples) < 10:
+                missing_file_examples.append(str(method_file))
             continue
         for record in load_jsonl(method_file):
+            method_records_seen += 1
             record_keys = sample_keys(record, method_metadata)
             matched_key = None
             full_response = None
@@ -370,6 +388,14 @@ def main() -> None:
                     break
             if full_response is None:
                 missing_records += 1
+                if len(missing_record_examples) < 10:
+                    missing_record_examples.append(
+                        {
+                            "method_file": str(method_file),
+                            "line_index": record.get("_line_index"),
+                            "candidate_keys": record_keys[:5],
+                        }
+                    )
                 continue
             pairs.append(
                 {
@@ -392,14 +418,18 @@ def main() -> None:
             "method_name": args.method_name,
             "budget": args.budget,
             "results_dir": str(results_dir),
+            "full_results_dir": str(full_results_dir),
             "num_method_files": len(method_files),
             "num_full_files": len(full_files),
             "full_budget_filter": None,
             "num_matched_method_files": 0,
             "num_pairs": 0,
+            "method_records_seen": method_records_seen,
             "missing_method_files_without_matching_full_seed": missing_files,
             "missing_records_within_matched_files": missing_records,
             "matched_key_counts": dict(sorted(matched_key_counts.items())),
+            "missing_method_file_examples": missing_file_examples,
+            "missing_record_examples": missing_record_examples,
         }
         if args.skip_missing:
             write_summary(summary, args.output)
@@ -437,15 +467,20 @@ def main() -> None:
         "method_name": args.method_name,
         "budget": args.budget,
         "results_dir": str(results_dir),
+        "full_results_dir": str(full_results_dir),
         "device": device,
         "num_method_files": len(method_files),
         "num_full_files": len(full_files),
         "full_budget_filter": None,
         "num_matched_method_files": len({pair["method_file"] for pair in pairs}),
         "num_pairs": len(pairs),
+        "method_records_seen": method_records_seen,
+        "matched_record_ratio": len(pairs) / method_records_seen if method_records_seen else math.nan,
         "missing_method_files_without_matching_full_seed": missing_files,
         "missing_records_within_matched_files": missing_records,
         "matched_key_counts": dict(sorted(matched_key_counts.items())),
+        "missing_method_file_examples": missing_file_examples,
+        "missing_record_examples": missing_record_examples,
         "avg_semantic_similarity": mean(similarities),
         "min_semantic_similarity": min(similarities),
         "max_semantic_similarity": max(similarities),
