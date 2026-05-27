@@ -19,6 +19,10 @@ try:
     from seer_attn import SeerDecodingQwen2ForCausalLM
 except ImportError:
     SeerDecodingQwen2ForCausalLM = None
+try:
+    from seer_attn import SeerDecodingQwen3ForCausalLM
+except ImportError:
+    SeerDecodingQwen3ForCausalLM = None
 from kvpress import BasePress, KeyRerotationPress, PerLayerCompressionPress
 
 from utils import default_extractor
@@ -460,10 +464,11 @@ def evaluate(
             }
         
         if "SeerAttention" in model_name:
-            if SeerDecodingQwen2ForCausalLM is None:
+            seer_model_cls = SeerDecodingQwen2ForCausalLM or SeerDecodingQwen3ForCausalLM
+            if seer_model_cls is None:
                 raise ImportError(
                     "SeerAttention model requested, but `seer_attn` is not installed "
-                    "or does not export SeerDecodingQwen2ForCausalLM."
+                    "or does not export SeerDecodingQwen2ForCausalLM/SeerDecodingQwen3ForCausalLM."
                 )
             # SeerAttention models: Load config first, then tokenizer from base_model
             # This is the recommended approach per SeerAttention documentation
@@ -473,7 +478,7 @@ def evaluate(
                 trust_remote_code=True,
                 padding_side="left",
             )
-            model = SeerDecodingQwen2ForCausalLM.from_pretrained(
+            model = seer_model_cls.from_pretrained(
                 model_name,
                 torch_dtype=torch.bfloat16,
                 trust_remote_code=True,
