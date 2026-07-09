@@ -229,6 +229,8 @@ def evaluate(
     measure_memory: bool = True,
     measure_latency: bool = True,
     temperature: float = 0.6,
+    top_p: float = 0.9,
+    run_tag: str = "",
 ):
     """
     Evaluate a model on a dataset using a press and save the results
@@ -285,6 +287,11 @@ def evaluate(
         Number of newly generated tokens between RPC re-selections (and the budget growth step), by default 128
     rpc_kernel_size : int, optional
         Pooling kernel size for RPC's importance scores, by default 7
+    top_p : float, optional
+        Top-p (nucleus) sampling parameter used when do_sampling is True, by default 0.9
+    run_tag : str, optional
+        Optional tag (e.g. "run1") appended to the output filename, useful for repeated runs with the same
+        configuration/seed to measure sampling variance, by default "" (no tag)
     measure_memory : bool, optional
         Whether to measure GPU memory usage, by default True
     measure_latency : bool, optional
@@ -408,6 +415,12 @@ def evaluate(
         save_filename = save_filename.with_name(save_filename.stem + f"__max_context{max_context_length}" + save_filename.suffix)
     if do_sampling:
         save_filename = save_filename.with_name(save_filename.stem + "__sampling" + save_filename.suffix)
+        top_p_sanitized = f"{top_p:.3f}".rstrip("0").rstrip(".").replace(".", "")
+        save_filename = save_filename.with_name(
+            save_filename.stem + f"__topp{top_p_sanitized}" + save_filename.suffix
+        )
+    if run_tag:
+        save_filename = save_filename.with_name(save_filename.stem + f"__{run_tag}" + save_filename.suffix)
     score_filename = save_dir / (save_filename.stem + "_score.json")
     evaluated_sample_start = 1
     evaluated_sample_end = 0
@@ -607,7 +620,7 @@ def evaluate(
                         attention_mask=inputs["attention_mask"],
                         max_new_tokens=max_new_tokens,
                         do_sample=True,
-                        top_p=0.9,
+                        top_p=top_p,
                         temperature=temperature,
                         repetition_penalty=1.2,
                         use_cache=True,
@@ -687,7 +700,7 @@ def evaluate(
                             attention_mask=inputs["attention_mask"],
                             max_new_tokens=max_new_tokens,
                             do_sample=True,
-                            top_p=0.9,
+                            top_p=top_p,
                             temperature=temperature,
                             repetition_penalty=1.2,
                             use_cache=True,
@@ -1002,6 +1015,9 @@ def evaluate(
     metrics["model_name"] = model_name
     metrics["press_name"] = press_name
     metrics["cache_budget"] = cache_budget
+    metrics["temperature"] = temperature
+    metrics["top_p"] = top_p
+    metrics["run_tag"] = run_tag
     if press_name=="rkvlsh":
         metrics["n_hash_buckets"] = n_hash_buckets
         metrics["lam"] = lam
