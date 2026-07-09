@@ -31,6 +31,8 @@ from kvpress.presses.full_press import FullPress
 from kvpress.presses.none_press import NonePress
 from kvpress.presses.rkv_press import RKVPress
 from kvpress.presses.rkv_press_lsh import RKVLSHPress
+from kvpress.presses.rpc_press import RPCPress
+from kvpress.presses.scope_press import SCOPEPress
 from kvpress.presses.turboquant_press import TurboQuantPress
 
 # Patch the attention functions to support head-wise compression
@@ -66,5 +68,7 @@ __all__ = [
     "NonePress",
     "RKVPress",
     "RKVLSHPress",
+    "RPCPress",
+    "SCOPEPress",
     "TurboQuantPress",
 ]

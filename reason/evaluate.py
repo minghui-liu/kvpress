@@ -52,6 +52,8 @@ from kvpress import (
     FullPress,
     RKVPress,
     RKVLSHPress,
+    RPCPress,
+    SCOPEPress,
     H2OPress,
     SnapKVPress,
     PyramidKVPress,
@@ -136,6 +138,8 @@ PRESS_DICT = {
     "pyramidkv": PyramidKVPress(),
     "rkv": RKVPress(),
     "rkvlsh": RKVLSHPress(),
+    "scope": SCOPEPress(),
+    "rpc": RPCPress(),
     "full": FullPress(),
     "none": NonePress(),  # No-op press that does nothing
     "turboquant": TurboQuantPress(),
@@ -213,6 +217,12 @@ def evaluate(
     lam:float=0.1,
     n_bits: int = 4,
     snapkv_window_size: int = 64,
+    scope_decoding_cache_budget: int = 0,
+    scope_compress_interval: int = 32,
+    scope_decoding_window_size: int = 8,
+    rpc_window_size: int = 32,
+    rpc_compress_interval: int = 128,
+    rpc_kernel_size: int = 7,
     track_tokens: bool = False,
     track_buckets: bool = False,
     enable_qualitative_analysis: bool = False,
@@ -263,6 +273,18 @@ def evaluate(
         key Channel Compression ratio for the channel press, by default 0.5
     enable_qualitative_analysis : bool, optional
         Enable qualitative token retention/eviction analysis for RKV-LSH, by default False
+    scope_decoding_cache_budget : int, optional
+        Decoding-phase cache budget for SCOPE (0 disables decoding-phase compression), by default 0
+    scope_compress_interval : int, optional
+        Number of newly generated tokens between SCOPE decoding-phase re-selections, by default 32
+    scope_decoding_window_size : int, optional
+        Number of most-recently generated tokens SCOPE never prunes during decoding, by default 8
+    rpc_window_size : int, optional
+        Selector/recent window size for RPC, by default 32
+    rpc_compress_interval : int, optional
+        Number of newly generated tokens between RPC re-selections (and the budget growth step), by default 128
+    rpc_kernel_size : int, optional
+        Pooling kernel size for RPC's importance scores, by default 7
     measure_memory : bool, optional
         Whether to measure GPU memory usage, by default True
     measure_latency : bool, optional
@@ -454,6 +476,17 @@ def evaluate(
             # Enable bucket tracking if requested
             if track_buckets:
                 press.enable_bucket_tracking()
+
+        if press_name == "scope" and press is not None:
+            press.window_size = snapkv_window_size
+            press.decoding_cache_budget = scope_decoding_cache_budget
+            press.compress_interval = scope_compress_interval
+            press.decoding_window_size = scope_decoding_window_size
+
+        if press_name == "rpc" and press is not None:
+            press.window_size = rpc_window_size
+            press.compress_interval = rpc_compress_interval
+            press.kernel_size = rpc_kernel_size
 
         # Presses that consume attentions need eager attention.
         attention_config = {}
@@ -972,6 +1005,14 @@ def evaluate(
     if press_name=="rkvlsh":
         metrics["n_hash_buckets"] = n_hash_buckets
         metrics["lam"] = lam
+    if press_name == "scope":
+        metrics["scope_decoding_cache_budget"] = scope_decoding_cache_budget
+        metrics["scope_compress_interval"] = scope_compress_interval
+        metrics["scope_decoding_window_size"] = scope_decoding_window_size
+    if press_name == "rpc":
+        metrics["rpc_window_size"] = rpc_window_size
+        metrics["rpc_compress_interval"] = rpc_compress_interval
+        metrics["rpc_kernel_size"] = rpc_kernel_size
     metrics["fraction"] = fraction
     metrics["requested_num_samples"] = num_samples
     metrics["dataset_block_index"] = dataset_block_index
