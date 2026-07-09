@@ -53,14 +53,6 @@ class StreamingLLMPress(ScorerPress):
             scores[:, :, : self.n_sink] = 1
             scores[:, :, -n_local:] = 1
 
-        # Debug prints similar to RKV/H2O
-        full_len = scores.shape[-1]
-        kept_len = scores.sum(dim=-1).int().min().item()  # minimum kept across batch/heads
-        print("---" * 10)
-        print(f"[DEBUG] (PRE) keys shape: {keys.shape}, values shape: {values.shape}")
-        print(f"[DEBUG] diff indices: {full_len - kept_len}")
-
-
         return scores
 
     def compress_decoding(
@@ -82,16 +74,6 @@ class StreamingLLMPress(ScorerPress):
         # Compute scores and select kept indices
         scores = self.score(module, hidden_states, keys, values, attentions, False, kwargs)
         indices = scores.topk(self.cache_budget, dim=-1).indices  # [B, Hkv, K]
-
-        # Debug counts
-        # try:
-        #     print("---" * 10)
-        #     print(f"[DEBUG] (PRE) keys shape: {keys.shape}, values shape: {values.shape}")
-        #     full_len = scores.shape[-1]
-        #     kept_len = indices.shape[2]
-        #     print(f"[DEBUG] diff indices: {full_len - kept_len}")
-        # except Exception:
-        #     pass
 
         # Gather pruned keys/values
         kv_indices = indices.unsqueeze(-1).expand(-1, -1, -1, module.head_dim)
