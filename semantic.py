@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 
-METHODS = {"rkv", "h2o", "knorm", "snapkv", "streaming_llm"}
+METHODS = {"rkv", "h2o", "knorm", "snapkv", "streaming_llm", "scope", "rpc"}
 DEFAULT_RESULTS_DIR = Path("results")
 
 
