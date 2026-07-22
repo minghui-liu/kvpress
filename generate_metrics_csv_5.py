@@ -42,7 +42,12 @@ def get_metrics(results_dir, dataset, model, method, budget, max_tokens):
                     data = json.load(f)
                     
                     # Extract metrics with fallback
-                    memory_gb = data.get('avg_memory_usage_gb', 0)
+                    # Prefer decoding-only peak memory. Fall back to the legacy
+                    # combined generation peak for older result files.
+                    memory_gb = data.get(
+                        'avg_decoding_memory_usage_gb',
+                        data.get('avg_memory_usage_gb', 0),
+                    )
                     memory_mb = memory_gb * 1024  # Convert GB to MB
                     throughput = data.get('avg_output_tokens_per_second', 0)
                     decoding_time = data.get('avg_decoding_time', 0)

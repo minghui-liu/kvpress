@@ -31,6 +31,8 @@ data = {
         "RKV": [817.35, 1469.20, 2642.46, 2634.30],
         "SnapKV-D": [1937.04, 1906.43, 1800.48, 1588.00],
         "StreamingLLM": [1516.62, 1555.52, 1514.99, 1427.08],  # max=16384 fallback
+        "SCOPE": [1400.70, 1363.30, 1319.30, 1361.90],
+        "RPC": [1370.60, 1363.10, 1383.40, 1385.10],
     },
     "DeepSeek R1 Distill Llama 8B": {
         "Full": [1188.30, 1188.30, 1188.30, 1188.30],
@@ -39,6 +41,8 @@ data = {
         "RKV": [2262.73, 3756.56, 3370.00, 1572.47],
         "SnapKV-D": [1206.26, 1217.73, 1226.48, 1329.38],
         "StreamingLLM": [2247.70, 1400.47, 1430.38, 1379.00],  # max=16384 fallback
+        "SCOPE": [1192.40, 1111.50, 1155.70, 1219.20],
+        "RPC": [1130.70, 1131.10, 1146.40, 1111.80],
     },
     "DeepSeek R1 Distill Qwen 7B": {
         "Full": [888.69, 888.69, 888.69, 888.69],
@@ -47,6 +51,8 @@ data = {
         "RKV": [2666.97, 2092.44, 2221.32, 2454.65],
         "SnapKV-D": [1591.89, 1572.69, 1786.56, 1609.07],
         "StreamingLLM": [2022.07, 1311.57, 1008.07, 1034.27],
+        "SCOPE": [1495.90, 1457.40, 1486.80, 1532.00],
+        "RPC": [1528.30, 1521.10, 1490.60, 1490.10],
     },
     "Meta Llama 3.1 8B Instruct": {
         "Full": [1460.26, 1460.26, 1460.26, 1460.26],
@@ -55,6 +61,8 @@ data = {
         "RKV": [4821.16, 3799.74, 2941.62, 2303.92],
         "SnapKV-D": [1256.65, 1724.68, 1585.21, 1478.36],
         "StreamingLLM": [1259.19, 1180.28, 1261.63, 1448.29],
+        "SCOPE": [1876.20, 1775.30, 1958.60, 1707.90],
+        "RPC": [1722.70, 1852.90, 1826.60, 1579.40],
     }
 }
 
@@ -67,6 +75,8 @@ methods_config = {
     "RKV": {"color": colors[3], "marker": "o", "linestyle": "-", "label": "RKV", "markerfacecolor": "none"},
     "SnapKV-D": {"color": colors[4], "marker": "d", "linestyle": "-", "label": "SnapKV-D", "markerfacecolor": "none"},
     "StreamingLLM": {"color": colors[5], "marker": "x", "linestyle": "-", "label": "StreamingLLM"},
+    "SCOPE": {"color": colors[6], "marker": "v", "linestyle": "-", "label": "SCOPE", "markerfacecolor": "none"},
+    "RPC": {"color": colors[7], "marker": "P", "linestyle": "-", "label": "RPC", "markerfacecolor": "none"},
 }
 
 
@@ -106,6 +116,7 @@ def plot_single_ax(ax, model_name, data_dict):
 
     ax.set_xticks(budgets)
     ax.set_xlim(110, 530)
+    ax.set_yscale("log")
 
 
 def main():
@@ -136,7 +147,7 @@ def main():
         handles,
         labels,
         loc="lower center",
-        ncol=3,
+        ncol=4,
         bbox_to_anchor=(0.5, -0.04),
         frameon=True,
         columnspacing=1.5

@@ -36,7 +36,10 @@ def get_metrics(dataset, model, method, budget):
                 with open(filepath, 'r') as f:
                     data = json.load(f)
                     return {
-                        'memory': data.get('avg_memory_usage_gb', None),
+                        'memory': data.get(
+                            'avg_decoding_memory_usage_gb',
+                            data.get('avg_memory_usage_gb', None),
+                        ),
                         'throughput': data.get('avg_output_tokens_per_second', None),
                         'decoding_time': data.get('avg_decoding_time', None),
                         'total_decoding_tokens': data.get('total_decoding_tokens', None)

@@ -14,7 +14,13 @@ from datasets import load_dataset
 from fire import Fire
 
 from tqdm import tqdm
-from transformers import AutoModelForCausalLM, AutoTokenizer,AutoConfig
+from transformers import (
+    AutoConfig,
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    LogitsProcessor,
+    LogitsProcessorList,
+)
 try:
     from seer_attn import SeerDecodingQwen2ForCausalLM
 except ImportError:
@@ -62,6 +68,81 @@ from kvpress import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class GenerationPhaseTracker(LogitsProcessor):
+    """Measure generation wall time and peak allocation on each side of prefill."""
+
+    def __init__(self, device: str, measure_memory: bool, measure_latency: bool):
+        self.device = torch.device(device)
+        self.measure_memory = measure_memory and self.device.type == "cuda"
+        self.measure_latency = measure_latency
+        self.prefill_memory_usage = 0.0
+        self.decoding_memory_usage = 0.0
+        self.prefill_time = 0.0
+        self.decoding_time = 0.0
+        self._generation_start = None
+        self._decoding_start = None
+
+    def _synchronize(self):
+        if self.device.type == "cuda":
+            torch.cuda.synchronize(self.device)
+
+    def start(self):
+        """Start immediately before ``model.generate``."""
+        if self.measure_memory or self.measure_latency:
+            self._synchronize()
+        if self.measure_memory:
+            torch.cuda.reset_peak_memory_stats(self.device)
+        self._generation_start = time()
+
+    def __call__(self, input_ids, scores):
+        # Transformers invokes logits processors after the initial forward pass
+        # has produced its logits, which is the prefill/decode boundary.
+        if self._decoding_start is None:
+            if self.measure_memory or self.measure_latency:
+                self._synchronize()
+            boundary_time = time()
+            if self.measure_latency:
+                self.prefill_time = boundary_time - self._generation_start
+            if self.measure_memory:
+                self.prefill_memory_usage = torch.cuda.max_memory_allocated(self.device) / 1024**3
+                # The current allocation (model + compressed prompt cache) becomes
+                # decoding's baseline; the earlier transient prefill peak is cleared.
+                torch.cuda.reset_peak_memory_stats(self.device)
+            self._decoding_start = boundary_time
+        return scores
+
+    def finish(self):
+        """Finish immediately after ``model.generate`` and return phase metrics."""
+        if self.measure_memory or self.measure_latency:
+            self._synchronize()
+        finish_time = time()
+
+        # A logits processor should always run for generation. Keep a safe fallback
+        # for unusual model implementations that return before applying processors.
+        if self._decoding_start is None:
+            self._decoding_start = finish_time
+            if self.measure_latency:
+                self.prefill_time = finish_time - self._generation_start
+            if self.measure_memory:
+                self.prefill_memory_usage = torch.cuda.max_memory_allocated(self.device) / 1024**3
+                torch.cuda.reset_peak_memory_stats(self.device)
+
+        if self.measure_latency:
+            self.decoding_time = finish_time - self._decoding_start
+        if self.measure_memory:
+            self.decoding_memory_usage = torch.cuda.max_memory_allocated(self.device) / 1024**3
+
+        return {
+            "generation_phase_metrics_version": 1,
+            "prefill_memory_usage": self.prefill_memory_usage,
+            "decoding_memory_usage": self.decoding_memory_usage,
+            "memory_usage": max(self.prefill_memory_usage, self.decoding_memory_usage),
+            "prefill_time": self.prefill_time,
+            "decoding_time": self.decoding_time,
+            "total_time": self.prefill_time + self.decoding_time,
+        }
 
 # (dataset_name, subset, split)
 DATASET_DICT = {
@@ -293,9 +374,9 @@ def evaluate(
         Optional tag (e.g. "run1") appended to the output filename, useful for repeated runs with the same
         configuration/seed to measure sampling variance, by default "" (no tag)
     measure_memory : bool, optional
-        Whether to measure GPU memory usage, by default True
+        Whether to measure separate prefill and decoding peak GPU allocations, by default True
     measure_latency : bool, optional
-        Whether to measure execution latency, by default True
+        Whether to measure separate full-phase prefill and decoding wall times, by default True
     """
 
     # Fire may pass boolean args as strings ("true"/"false") — normalize them
@@ -583,19 +664,26 @@ def evaluate(
             if max_new_tokens is None:
                 max_new_tokens = 16 * 1024 - inputs["input_ids"].shape[1] # use 16k for max length for now
 
-            # Reset memory stats and clear cache before generation
+            # Clear unused cached blocks before generation. Phase-local peak stats
+            # are reset by GenerationPhaseTracker immediately before each phase.
             if measure_memory:
-                torch.cuda.reset_peak_memory_stats()
                 torch.cuda.empty_cache()
 
-            # Synchronize before timing only if measuring latency for accurate measurements
-            if measure_latency:
-                torch.cuda.synchronize()
-                if not measure_memory:  # Only clear cache if not already done for memory measurement
-                    torch.cuda.empty_cache()
-                start=time()
-            else:
-                start = None
+            phase_tracker = GenerationPhaseTracker(
+                device=tensor_device,
+                measure_memory=measure_memory,
+                measure_latency=measure_latency,
+            )
+            phase_logits_processors = LogitsProcessorList([phase_tracker])
+            sampling_kwargs = {
+                "do_sample": do_sampling,
+            }
+            if do_sampling:
+                sampling_kwargs.update(
+                    top_p=top_p,
+                    temperature=temperature,
+                    repetition_penalty=1.2,
+                )
 
             # Special handling for SeerAttention with NonePress: use simplified inference path
             # This bypasses all press infrastructure to avoid cache initialization issues
@@ -614,31 +702,19 @@ def evaluate(
                 # Initialize input_token_ids for potential use in tracking (though tracking is skipped)
                 input_token_ids = inputs["input_ids"][0].tolist()
                 
-                if do_sampling:
-                    outputs = model.generate(
-                        inputs["input_ids"],
-                        attention_mask=inputs["attention_mask"],
-                        max_new_tokens=max_new_tokens,
-                        do_sample=True,
-                        top_p=top_p,
-                        temperature=temperature,
-                        repetition_penalty=1.2,
-                        use_cache=True,
-                        eos_token_id=tokenizer.eos_token_id,
-                        pad_token_id=tokenizer.pad_token_id,
-                        output_attentions=False,
-                    )
-                else:
-                    outputs = model.generate(
-                        inputs["input_ids"],
-                        attention_mask=inputs["attention_mask"],
-                        max_new_tokens=max_new_tokens,
-                        do_sample=False,
-                        use_cache=True,
-                        eos_token_id=tokenizer.eos_token_id,
-                        pad_token_id=tokenizer.pad_token_id,
-                        output_attentions=False,
-                    )
+                phase_tracker.start()
+                outputs = model.generate(
+                    inputs["input_ids"],
+                    attention_mask=inputs["attention_mask"],
+                    max_new_tokens=max_new_tokens,
+                    use_cache=True,
+                    eos_token_id=tokenizer.eos_token_id,
+                    pad_token_id=tokenizer.pad_token_id,
+                    output_attentions=False,
+                    logits_processor=phase_logits_processors,
+                    **sampling_kwargs,
+                )
+                phase_metrics = phase_tracker.finish()
                 
                 # Decode response for SeerAttention path
                 pred_start = inputs["input_ids"].shape[1]
@@ -693,33 +769,20 @@ def evaluate(
                 # Use press context manager
                 press_context = press(model) if press is not None and not isinstance(press, NonePress) else contextlib.nullcontext()
                 
-                if do_sampling:
-                    with press_context:
-                        outputs = model.generate(
-                            inputs["input_ids"],
-                            attention_mask=inputs["attention_mask"],
-                            max_new_tokens=max_new_tokens,
-                            do_sample=True,
-                            top_p=top_p,
-                            temperature=temperature,
-                            repetition_penalty=1.2,
-                            use_cache=True,
-                            eos_token_id=tokenizer.eos_token_id,
-                            pad_token_id=tokenizer.pad_token_id,
-                            output_attentions=output_attentions(press) if press is not None and not isinstance(press, NonePress) else False,
-                        )
-                else:
-                    with press_context:
-                        outputs = model.generate(
-                            inputs["input_ids"],
-                            attention_mask=inputs["attention_mask"],
-                            max_new_tokens=max_new_tokens,
-                            do_sample=False,
-                            use_cache=True,
-                            eos_token_id=tokenizer.eos_token_id,
-                            pad_token_id=tokenizer.pad_token_id,
-                            output_attentions=output_attentions(press) if press is not None and not isinstance(press, NonePress) else False,
-                        )
+                with press_context:
+                    phase_tracker.start()
+                    outputs = model.generate(
+                        inputs["input_ids"],
+                        attention_mask=inputs["attention_mask"],
+                        max_new_tokens=max_new_tokens,
+                        use_cache=True,
+                        eos_token_id=tokenizer.eos_token_id,
+                        pad_token_id=tokenizer.pad_token_id,
+                        output_attentions=output_attentions(press) if press is not None and not isinstance(press, NonePress) else False,
+                        logits_processor=phase_logits_processors,
+                        **sampling_kwargs,
+                    )
+                    phase_metrics = phase_tracker.finish()
                 
                 # Decode response for standard path
                 pred_start = inputs["input_ids"].shape[1]
@@ -731,9 +794,12 @@ def evaluate(
                 model_answer = extractor(response)
 
             # Get timing metrics from press if available (before deleting tensors)
-            timing_metrics = {}
+            press_timing_metrics = {}
             if press is not None and hasattr(press, 'get_timing_metrics'):
-                timing_metrics = press.get_timing_metrics()
+                press_timing_metrics = {
+                    f"press_{key}": value
+                    for key, value in press.get_timing_metrics().items()
+                }
 
             # Calculate metrics before deleting tensors
             input_token_count = inputs["input_ids"].shape[1]
@@ -741,21 +807,13 @@ def evaluate(
             response_token_length = output_token_count
             total_token_count = outputs[0].shape[0]
             
-            # Measure memory only if requested
-            if measure_memory:
-                if measure_latency:
-                    torch.cuda.synchronize()  # Ensure all operations complete before reading memory
-                peak_memory = torch.cuda.max_memory_allocated()
-                memory_usage = peak_memory / 1024**3
-            else:
-                memory_usage = 0.0
-            
-            # Measure latency only if requested
-            if measure_latency:
-                torch.cuda.synchronize()  # Ensure all operations complete before timing
-                execution_time = time() - start
-            else:
-                execution_time = 0.0
+            phase_metrics["output_tokens_per_second"] = (
+                output_token_count / phase_metrics["decoding_time"]
+                if measure_latency and phase_metrics["decoding_time"] > 0
+                else 0.0
+            )
+            phase_metrics["total_prefill_tokens"] = input_token_count
+            phase_metrics["total_decoding_tokens"] = output_token_count
             
             # For NonePress, no compression is applied
             if press is None or isinstance(press, NonePress):
@@ -778,8 +836,10 @@ def evaluate(
                     "total_token_count": total_token_count,
                     "cache_budget": cache_budget,
                     "compression_ratio": actual_compression,
-                    "memory_usage": memory_usage,
-                    "execution_time": execution_time,
+                    "memory_usage": phase_metrics["memory_usage"],
+                    "prefill_memory_usage": phase_metrics["prefill_memory_usage"],
+                    "decoding_memory_usage": phase_metrics["decoding_memory_usage"],
+                    "execution_time": phase_metrics["total_time"],
                 }
             )
             
@@ -813,8 +873,10 @@ def evaluate(
             gc.collect()
             gc.collect()  # Second pass to catch circular references
             
-            # Add timing metrics to save_obj
-            save_obj.update(timing_metrics)
+            # Phase metrics cover the full model.generate call. Press timing metrics
+            # cover only the compression hooks and use an explicit prefix.
+            save_obj.update(phase_metrics)
+            save_obj.update(press_timing_metrics)
             
             if track_tokens and not is_seer_attention_none:
                 # Track keyword retention if press tracks retention
@@ -894,7 +956,11 @@ def evaluate(
                 if hasattr(press, 'next_sample'):
                     press.next_sample()
 
-            print(f"✅ [{i+1}/{len(ds)}] Saved result for question {i+1} to {save_filename.name} (Memory: {memory_usage:.2f} GB)")
+            print(
+                f"✅ [{i+1}/{len(ds)}] Saved result for question {i+1} to {save_filename.name} "
+                f"(Prefill memory: {phase_metrics['prefill_memory_usage']:.2f} GB, "
+                f"decoding memory: {phase_metrics['decoding_memory_usage']:.2f} GB)"
+            )
             
             # Additional aggressive memory cleanup every 3 samples to prevent accumulation
             if (i + 1) % 3 == 0:
@@ -972,14 +1038,31 @@ def evaluate(
     if measure_memory and save_obj:
         metrics["avg_memory_usage_gb"] = sum([obj.get("memory_usage", 0.0) for obj in save_obj]) / len(save_obj)
         metrics["max_memory_usage_gb"] = max([obj.get("memory_usage", 0.0) for obj in save_obj])
+        if all(obj.get("generation_phase_metrics_version") == 1 for obj in save_obj):
+            metrics["avg_prefill_memory_usage_gb"] = sum(
+                obj["prefill_memory_usage"] for obj in save_obj
+            ) / len(save_obj)
+            metrics["max_prefill_memory_usage_gb"] = max(
+                obj["prefill_memory_usage"] for obj in save_obj
+            )
+            metrics["avg_decoding_memory_usage_gb"] = sum(
+                obj["decoding_memory_usage"] for obj in save_obj
+            ) / len(save_obj)
+            metrics["max_decoding_memory_usage_gb"] = max(
+                obj["decoding_memory_usage"] for obj in save_obj
+            )
     
     # Add latency metrics if measured
     if measure_latency and save_obj:
         metrics["avg_execution_time"] = sum([obj.get("execution_time", 0.0) for obj in save_obj]) / len(save_obj)
         metrics["total_execution_time"] = sum([obj.get("execution_time", 0.0) for obj in save_obj])
     
-    # Add timing metrics averages (from press internal timing)
-    if save_obj and "prefill_time" in save_obj[0]:
+    # Add full-generation phase timing averages.
+    if (
+        measure_latency
+        and save_obj
+        and all(obj.get("generation_phase_metrics_version") == 1 for obj in save_obj)
+    ):
         import numpy as np
         
         prefill_times = [obj["prefill_time"] for obj in save_obj]
@@ -1040,6 +1123,8 @@ def evaluate(
     metrics["random_seed"] = random_seed
     metrics["measure_memory"] = measure_memory
     metrics["measure_latency"] = measure_latency
+    if save_obj and all(obj.get("generation_phase_metrics_version") == 1 for obj in save_obj):
+        metrics["generation_phase_metrics_version"] = 1
 
     with open(str(score_filename), "w") as f:
         json.dump(metrics, f)
