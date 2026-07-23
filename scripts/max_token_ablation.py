@@ -8,6 +8,8 @@ ACCURACY = {
     "KNorm": [0.31, 0.30, 0.30, 0.30],
     "SnapKV": [0.31, 0.59, 0.62, 0.63],
     "StreamingLLM": [0.48, 0.54, 0.54, 0.54],
+    "SCOPE": [0.35, 0.58, 0.63, 0.66],
+    "RPC": [0.40, 0.60, 0.66, 0.65],
 }
 
 COLORS = {
@@ -15,6 +17,8 @@ COLORS = {
     "KNorm": "#ff7f0e",
     "SnapKV": "#2ca02c",
     "StreamingLLM": "#d62728",
+    "SCOPE": "#9467bd",
+    "RPC": "#8c564b",
 }
 
 
@@ -45,9 +49,9 @@ def main():
     ax.set_xlabel("Max New Tokens")
     ax.set_ylabel("Accuracy")
     ax.set_xticks(MAX_NEW_TOKENS)
-    ax.set_ylim(0.28, 0.65)
+    ax.set_ylim(0.28, 0.70)
     ax.grid(True, alpha=0.55)
-    ax.legend(loc="lower right", bbox_to_anchor=(0.98, 0.16), frameon=True)
+    ax.legend(loc="lower right", bbox_to_anchor=(0.98, 0.16), frameon=True,ncol=2)
 
     fig.tight_layout()
     out_file = "scripts/max_token_ablation.pdf"
