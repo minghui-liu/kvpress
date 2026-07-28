@@ -84,6 +84,7 @@ def run_experiment(model_name: str, dataset: str) -> bool:
     cmd = [
         "python",
         SCRIPT_PATH,
+        f"--result_dir={RESULT_DIR}",
         f"--dataset={dataset}",
         f"--model_name={model_name}",
         f"--press_name={PRESS_NAME}",

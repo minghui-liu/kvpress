@@ -165,6 +165,7 @@ fi
 echo "Running dataset=$DATASET | model=$MODEL_NAME | press=$PRESS_NAME | budget=$CACHE_BUDGET | max_new_tokens=$MAX_NEW_TOKENS | max_tokens_mode=$MAX_TOKENS_MODE | lambda=$LAMBDA"
 
 python "$SCRIPT_PATH" \
+  --result_dir="$RESULT_DIR" \
   --dataset="$DATASET" \
   --model_name="$MODEL_NAME" \
   --press_name="$PRESS_NAME" \

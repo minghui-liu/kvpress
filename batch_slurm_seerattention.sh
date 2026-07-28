@@ -112,6 +112,7 @@ fi
 
 echo "Running SeerAttention | dataset=$DATASET | budget=$CACHE_BUDGET | seed=$RANDOM_SEED | block=$DATASET_BLOCK_INDEX/${NUM_BLOCKS} | model=$MODEL_NAME"
 python "$SCRIPT_PATH" \
+  --result_dir="$RESULT_DIR" \
   --dataset="$DATASET" \
   --model_name="$MODEL_NAME" \
   --press_name="$PRESS_METHOD" \

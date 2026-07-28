@@ -38,16 +38,25 @@ class KnormPress(ScorerPress):
         attentions: torch.Tensor,
         kwargs: dict,
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        kv_len = keys.shape[2]
+        layer_idx = getattr(module, "layer_idx", 0)
         if self.cache_budget == 0:
+            if layer_idx == 0:
+                self.track_retained_cache_positions(kv_len, list(range(kv_len)))
             return keys, values
 
-        kv_len = keys.shape[2]
         if self.cache_budget >= kv_len:
+            if layer_idx == 0:
+                self.track_retained_cache_positions(kv_len, list(range(kv_len)))
             return keys, values
 
         # Compute scores with L2 norm (more negative = more important)
         scores = self.score(module, hidden_states, keys, values, attentions, False, kwargs)
         indices = scores.topk(self.cache_budget, dim=-1).indices  # [B, Hkv, K]
+        if layer_idx == 0:
+            self.track_retained_cache_positions(
+                kv_len, indices[0, 0].detach().cpu().tolist()
+            )
         full_len = int(scores.shape[-1])
         kept_len = int(indices.shape[2])
 

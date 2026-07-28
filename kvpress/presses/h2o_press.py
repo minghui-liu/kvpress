@@ -133,7 +133,11 @@ class H2OPress(ScorerPress):
 
 
     def compress_decoding(self, module, hidden_states, keys, values, attentions, kwargs):
+        kv_len = keys.shape[2]
+        layer_idx = getattr(module, "layer_idx", 0)
         if self.cache_budget == 0:
+            if layer_idx == 0:
+                self.track_retained_cache_positions(kv_len, list(range(kv_len)))
             return keys, values
     
         # add to the accumulated attention weights
@@ -154,9 +158,6 @@ class H2OPress(ScorerPress):
         new_n_tokens_in_sum[:, :, :n_existing] += n_tokens_in_sum
         self._set_layer_state(module, new_acc_attn, new_n_tokens_in_sum)
 
-        kv_len = keys.shape[2]
-        layer_idx = getattr(module, "layer_idx", 0)
-        
         if self.cache_budget >= q_len:
             # All tokens retained, track if needed
             if layer_idx == 0 and self.input_tokens is not None:
@@ -167,6 +168,7 @@ class H2OPress(ScorerPress):
                     all_token_ids = self.input_tokens.cpu().tolist() + list(range(len(self.input_tokens), kv_len))
                     retained_token_ids = all_token_ids.copy()
                 self.track_generation_step(all_token_ids, retained_token_ids, self.tokenizer)
+                self.track_retained_cache_positions(kv_len, list(range(kv_len)))
             return keys, values
 
         # Compute scores
@@ -187,6 +189,7 @@ class H2OPress(ScorerPress):
                 retained_positions = indices[0, 0, :].cpu().tolist()
                 retained_token_ids = [all_token_ids[pos] if pos < len(self.input_tokens) else pos for pos in retained_positions]
             self.track_generation_step(all_token_ids, retained_token_ids, self.tokenizer)
+            self.track_retained_cache_positions(kv_len, retained_positions)
 
         # Prune keys and values
         kv_indices = indices.unsqueeze(-1).expand(-1, -1, -1, module.head_dim) # bsz, num_key_value_heads, cache_budget, head_dim

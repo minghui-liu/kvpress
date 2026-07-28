@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 1993-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+from __future__ import annotations
 
 import logging
 from contextlib import contextmanager
@@ -107,6 +108,12 @@ class BasePress:
         # Keyword tracking
         self.retained_token_indices: list = []  # List of sets of retained indices per compression step
         self.all_token_indices: list = []  # List of all token indices before compression
+        # Original sequence positions currently represented by the layer-0 cache
+        # (head 0 is used when heads select different positions).
+        self._tracked_cache_origins: list[int] = []
+        self._next_cache_origin: int = 0
+        self._retention_tracking_supported: bool = False
+        self._retention_tracking_invalid: bool = False
         
         # Per-step token tracking during generation
         self.generation_steps: list = []  # List of dicts with step info: {step, all_tokens, retained_tokens, evicted_tokens, newly_added_tokens}
@@ -122,25 +129,93 @@ class BasePress:
         # Reset keyword tracking
         self.retained_token_indices = []
         self.all_token_indices = []
+        self._tracked_cache_origins = []
+        self._next_cache_origin = 0
+        self._retention_tracking_supported = False
+        self._retention_tracking_invalid = False
         # Reset per-step tracking
         self.generation_steps = []
         self.current_generation_step = 0
         self.previous_cache_tokens = set()
     
     def track_retention(self, all_indices: list, retained_indices: list):
-        """Track which tokens were retained in the cache"""
+        """Record a retention decision expressed in original sequence positions."""
         self.all_token_indices.append(all_indices.copy())
         self.retained_token_indices.append(retained_indices.copy())
-    
+
+    def _sync_tracked_cache_origins(self, kv_len: int):
+        """Extend persistent cache identities for newly decoded tokens."""
+        if not self._tracked_cache_origins:
+            self._tracked_cache_origins = list(range(kv_len))
+            self._next_cache_origin = kv_len
+            return
+
+        if kv_len < len(self._tracked_cache_origins):
+            # This press pruned without exposing the selected cache positions.
+            # Disable the metric for this sample instead of fabricating identities
+            # or crashing generation.
+            self._retention_tracking_supported = False
+            self._retention_tracking_invalid = True
+            self._tracked_cache_origins = list(range(kv_len))
+            self._next_cache_origin = max(self._next_cache_origin, kv_len)
+            return
+
+        n_new = kv_len - len(self._tracked_cache_origins)
+        if n_new:
+            self._tracked_cache_origins.extend(
+                range(self._next_cache_origin, self._next_cache_origin + n_new)
+            )
+            self._next_cache_origin += n_new
+
+    def track_retained_cache_positions(self, kv_len: int, retained_positions: list[int]):
+        """Update cache identities after a layer-0/head-0 retention decision."""
+        if self.tokenizer is None or self.input_tokens is None:
+            return
+
+        self._sync_tracked_cache_origins(kv_len)
+        if self._retention_tracking_invalid:
+            return
+        if any(position < 0 or position >= kv_len for position in retained_positions):
+            raise IndexError("A retained cache position is outside the current KV cache.")
+
+        all_origins = self._tracked_cache_origins.copy()
+        retained_origins = [all_origins[position] for position in retained_positions]
+        self.track_retention(all_origins, retained_origins)
+        self._tracked_cache_origins = retained_origins
+        self._retention_tracking_supported = True
+
+        if self.generation_steps:
+            step_info = self.generation_steps[-1]
+            retained_set = set(retained_origins)
+            step_info["all_token_positions"] = all_origins
+            step_info["retained_token_positions"] = retained_origins.copy()
+            step_info["evicted_token_positions"] = [
+                origin for origin in all_origins if origin not in retained_set
+            ]
+
+    def get_tracked_cache_token_ids(self, kv_len: int) -> list[int | None]:
+        """Return prompt token IDs aligned with cache positions before pruning."""
+        self._sync_tracked_cache_origins(kv_len)
+        if self.input_tokens is None:
+            return [None] * kv_len
+        prompt_token_ids = self.input_tokens.cpu().tolist()
+        return [
+            prompt_token_ids[origin] if origin < len(prompt_token_ids) else None
+            for origin in self._tracked_cache_origins
+        ]
+
+    def retention_tracking_is_reliable(self) -> bool:
+        return self._retention_tracking_supported
+
+    def get_tracked_sequence_length(self) -> int:
+        """Return how many original prompt+generation positions entered the cache."""
+        return self._next_cache_origin
+
     def get_final_retained_indices(self) -> set:
-        """Get the final set of retained token indices after all compressions"""
-        if not self.retained_token_indices:
+        """Return original prompt/sequence positions in the final tracked cache."""
+        if not self._retention_tracking_supported:
             return set()
-        # Return the intersection of all retained indices (tokens that survived all compressions)
-        final = set(self.retained_token_indices[0])
-        for retained in self.retained_token_indices[1:]:
-            final = final & set(retained)
-        return final
+        return set(self._tracked_cache_origins)
     
     def track_generation_step(self, all_token_ids: list, retained_token_ids: list, tokenizer=None):
         """
@@ -233,9 +308,15 @@ class BasePress:
     def _track_prefilling_step(self, module: nn.Module, keys: torch.Tensor):
         """Track a prefilling step."""
         # Early return if tokenizer or input_tokens is None (tracking disabled)
-        if self.tokenizer is None or self.input_tokens is None:
+        if (
+            self.tokenizer is None
+            or self.input_tokens is None
+            or getattr(module, "layer_idx", 0) != 0
+        ):
             return
         kv_len = keys.shape[2]
+        self._tracked_cache_origins = list(range(kv_len))
+        self._next_cache_origin = kv_len
         
         # For prefilling, track that we're in prefilling phase
         if kv_len <= len(self.input_tokens):
@@ -253,7 +334,10 @@ class BasePress:
             'newly_added_tokens': all_token_ids.copy(),  # All tokens are newly added during prefilling
             'previous_cache_tokens': [],
             'num_evicted': 0,
-            'num_newly_added': len(all_token_ids)
+            'num_newly_added': len(all_token_ids),
+            'all_token_positions': list(range(kv_len)),
+            'retained_token_positions': list(range(kv_len)),
+            'evicted_token_positions': [],
         }
         
         step_info['all_tokens_text'] = [self.tokenizer.decode([tid], skip_special_tokens=True) if isinstance(tid, int) else str(tid) for tid in all_token_ids]
@@ -274,6 +358,7 @@ class BasePress:
         if self.tokenizer is None or self.input_tokens is None:
             return
         kv_len = keys.shape[2]
+        self._sync_tracked_cache_origins(kv_len)
         
         # Get all tokens in cache before compression
         if kv_len <= len(self.input_tokens):
@@ -292,7 +377,10 @@ class BasePress:
             'newly_added_tokens': list(set(all_token_ids) - self.previous_cache_tokens),
             'num_evicted': 0,
             'num_newly_added': len(set(all_token_ids) - self.previous_cache_tokens),
-            'note': f'Decoding step: {len(set(all_token_ids) - self.previous_cache_tokens)} tokens newly retained, 0 tokens evicted'
+            'note': f'Decoding step: {len(set(all_token_ids) - self.previous_cache_tokens)} tokens newly retained, 0 tokens evicted',
+            'all_token_positions': self._tracked_cache_origins.copy(),
+            'retained_token_positions': self._tracked_cache_origins.copy(),
+            'evicted_token_positions': [],
         }
         
         step_info['all_tokens_before_compression_text'] = [self.tokenizer.decode([tid], skip_special_tokens=True) if isinstance(tid, int) else str(tid) for tid in all_token_ids]

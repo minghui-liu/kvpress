@@ -148,11 +148,16 @@ class ScorerPress(BasePress):
         kwargs: dict,
     ) -> tuple[torch.Tensor, torch.Tensor]:
 
+        q_len = hidden_states.shape[1]
+        layer_idx = getattr(module, "layer_idx", 0)
         if self.cache_budget <= 0:
+            if layer_idx == 0:
+                self.track_retained_cache_positions(q_len, list(range(q_len)))
             return keys, values
 
-        q_len = hidden_states.shape[1]
         if self.cache_budget >= q_len:
+            if layer_idx == 0:
+                self.track_retained_cache_positions(q_len, list(range(q_len)))
             return keys, values
 
         # Compute scores
@@ -164,6 +169,10 @@ class ScorerPress(BasePress):
             scores = score_result
         # Get indices of KV pairs with the lowest scores
         indices = scores.topk(self.cache_budget, dim=-1).indices
+
+        if layer_idx == 0:
+            retained_positions = indices[0, 0].detach().cpu().tolist()
+            self.track_retained_cache_positions(q_len, retained_positions)
         
         # Save ranking data
         #self.save_ranking_data(scores, indices, q_len, True)
@@ -185,23 +194,19 @@ class ScorerPress(BasePress):
         attentions: torch.Tensor,
         kwargs: dict,
     ) -> tuple[torch.Tensor, torch.Tensor]:
- 
+        kv_len = keys.shape[2]
         if self.cache_budget == 0:
+            if getattr(module, "layer_idx", 0) == 0:
+                self.track_retained_cache_positions(kv_len, list(range(kv_len)))
             return keys, values
 
-        kv_len = keys.shape[2]
         if self.cache_budget >= kv_len:
             # All tokens retained, track if needed (only if tokenizer is set)
             if getattr(module, "layer_idx", 0) == 0 and self.tokenizer is not None:  # Only track at first layer to avoid duplicates
-                # Map position indices to actual token IDs
-                if kv_len <= len(self.input_tokens):
-                    all_token_ids = self.input_tokens[:kv_len].cpu().tolist()
-                    retained_token_ids = all_token_ids.copy()
-                else:
-                    # If kv_len > input_tokens, we have generated tokens
-                    all_token_ids = self.input_tokens.cpu().tolist() + list(range(len(self.input_tokens), kv_len))
-                    retained_token_ids = all_token_ids.copy()
+                all_token_ids = self.get_tracked_cache_token_ids(kv_len)
+                retained_token_ids = all_token_ids.copy()
                 self.track_generation_step(all_token_ids, retained_token_ids, self.tokenizer)
+                self.track_retained_cache_positions(kv_len, list(range(kv_len)))
             return keys, values
 
         # Compute scores
@@ -217,17 +222,11 @@ class ScorerPress(BasePress):
         
         # Track token retention/eviction at first layer only (only if tokenizer is set)
         if getattr(module, "layer_idx", 0) == 0 and self.tokenizer is not None:  # Only track at first layer to avoid duplicates
-            # Map position indices to actual token IDs
-            if kv_len <= len(self.input_tokens):
-                all_token_ids = self.input_tokens[:kv_len].cpu().tolist()
-                retained_positions = indices[0, 0, :, 0].cpu().tolist()  # Get retained position indices
-                retained_token_ids = [all_token_ids[pos] for pos in retained_positions]
-            else:
-                # If kv_len > input_tokens, we have generated tokens (use position indices as placeholders)
-                all_token_ids = self.input_tokens.cpu().tolist() + list(range(len(self.input_tokens), kv_len))
-                retained_positions = indices[0, 0, :, 0].cpu().tolist()
-                retained_token_ids = [all_token_ids[pos] if pos < len(self.input_tokens) else pos for pos in retained_positions]
+            all_token_ids = self.get_tracked_cache_token_ids(kv_len)
+            retained_positions = indices[0, 0, :, 0].cpu().tolist()
+            retained_token_ids = [all_token_ids[pos] for pos in retained_positions]
             self.track_generation_step(all_token_ids, retained_token_ids, self.tokenizer)
+            self.track_retained_cache_positions(kv_len, retained_positions)
 
         # Save ranking data only if tokenizer is set (tracking enabled)
         if self.tokenizer is not None:

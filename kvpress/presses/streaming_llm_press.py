@@ -64,16 +64,25 @@ class StreamingLLMPress(ScorerPress):
         attentions: torch.Tensor,
         kwargs: dict,
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        kv_len = keys.shape[2]
+        layer_idx = getattr(module, "layer_idx", 0)
         if self.cache_budget == 0:
+            if layer_idx == 0:
+                self.track_retained_cache_positions(kv_len, list(range(kv_len)))
             return keys, values
 
-        kv_len = keys.shape[2]
         if self.cache_budget >= kv_len:
+            if layer_idx == 0:
+                self.track_retained_cache_positions(kv_len, list(range(kv_len)))
             return keys, values
 
         # Compute scores and select kept indices
         scores = self.score(module, hidden_states, keys, values, attentions, False, kwargs)
         indices = scores.topk(self.cache_budget, dim=-1).indices  # [B, Hkv, K]
+        if layer_idx == 0:
+            self.track_retained_cache_positions(
+                kv_len, indices[0, 0].detach().cpu().tolist()
+            )
 
         # Gather pruned keys/values
         kv_indices = indices.unsqueeze(-1).expand(-1, -1, -1, module.head_dim)

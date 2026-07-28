@@ -1,289 +1,286 @@
-"""
-Analyze density of math-critical keywords in eviction decisions.
-Focus on tokens that directly affect math problem solving:
-- Numbers (digits, numeric values)
-- Variable names (n, x, y, k, etc.)
-- Math operators (+, -, *, /, =, etc.)
-- Math function words (sum, product, total, etc.)
-- Problem-specific keywords (answer, value, equal, find, etc.)
-- Named entities from questions (proper nouns, names)
-"""
+#!/usr/bin/env python3
+"""Calculate math-critical token retention from an evaluation result JSONL."""
 
+from __future__ import annotations
+
+import argparse
 import json
 from collections import Counter, defaultdict
-from transformers import AutoTokenizer
+from pathlib import Path
+from typing import Any
 
-RANKING_DIR = "ranking_analysis"
-
-FILES = {
-    "7b_rkv": f"{RANKING_DIR}/token_decisions_rkv_budget1024.jsonl",
-    "14b_rkv": f"{RANKING_DIR}/token_decisions_rkv_deepseek-ai--DeepSeek-R1-Distill-Qwen-14B_budget1024.jsonl",
-    "14b_rkvlsh": f"{RANKING_DIR}/token_decisions_rkvlsh_deepseek-ai--DeepSeek-R1-Distill-Qwen-14B_budget1024_buckets8.jsonl",
+MATH_VARIABLES = {
+    "n", "x", "y", "z", "k", "m", "a", "b", "c", "d", "f", "p", "q", "r", "t", "i", "j"
+}
+MATH_OPERATORS = {"+", "-", "*", "/", "=", "<", ">", "^", "!", "%", "±"}
+MATH_FUNCTIONS = {
+    "sin", "cos", "tan", "log", "ln", "sqrt", "sum", "prod", "lim",
+    "max", "min", "mod", "gcd", "lcm", "abs", "exp", "int",
+}
+MATH_SYMBOLS = {
+    "frac", "cdot", "times", "div", "pi", "theta", "alpha", "beta",
+    "gamma", "delta", "sigma", "lambda", "omega", "infty", "neq",
+    "leq", "geq", "approx", "equiv", "subset", "cup", "cap",
+}
+MATH_KEYWORDS = {
+    "answer", "value", "equal", "equals", "find", "calculate", "compute",
+    "determine", "solve", "prove", "show", "sum", "product", "total",
+    "remainder", "quotient", "ratio", "percent", "percentage",
+    "area", "volume", "perimeter", "radius", "diameter", "angle",
+    "triangle", "circle", "square", "rectangle", "polygon",
+    "equation", "expression", "function", "formula", "theorem",
+    "probability", "combination", "permutation", "factorial",
+    "maximum", "minimum", "average", "mean", "median", "mode",
+    "integer", "prime", "even", "odd", "positive", "negative",
+    "diagonal", "column", "row", "matrix", "sequence", "series",
+}
+COMMON_CAPITALIZED_WORDS = {
+    "the", "and", "for", "that", "this", "with", "from", "what",
+    "how", "when", "where", "which", "each", "all", "but", "not",
+    "are", "was", "were", "been", "being", "have", "has", "had",
+    "will", "would", "could", "should", "may", "might", "can",
+    "let", "sol", "below", "step", "think", "wait", "okay",
+    "now", "then", "first", "next", "since", "because", "therefore",
 }
 
-# Math-critical token categories
-MATH_VARIABLES = {"n", "x", "y", "z", "k", "m", "a", "b", "c", "d", "f", "p", "q", "r", "t", "i", "j"}
-MATH_OPERATORS = {"+", "-", "*", "/", "=", "<", ">", "^", "!", "%", "±"}
-MATH_FUNCTIONS = {"sin", "cos", "tan", "log", "ln", "sqrt", "sum", "prod", "lim",
-                  "max", "min", "mod", "gcd", "lcm", "abs", "exp", "int"}
-MATH_SYMBOLS = {"frac", "cdot", "times", "div", "pi", "theta", "alpha", "beta",
-                "gamma", "delta", "sigma", "lambda", "omega", "infty", "neq",
-                "leq", "geq", "approx", "equiv", "subset", "cup", "cap"}
-MATH_KEYWORDS = {"answer", "value", "equal", "equals", "find", "calculate", "compute",
-                 "determine", "solve", "prove", "show", "sum", "product", "total",
-                 "remainder", "quotient", "ratio", "percent", "percentage",
-                 "area", "volume", "perimeter", "radius", "diameter", "angle",
-                 "triangle", "circle", "square", "rectangle", "polygon",
-                 "equation", "expression", "function", "formula", "theorem",
-                 "probability", "combination", "permutation", "factorial",
-                 "maximum", "minimum", "average", "mean", "median", "mode",
-                 "integer", "prime", "even", "odd", "positive", "negative",
-                 "diagonal", "column", "row", "matrix", "sequence", "series"}
 
-
-def load_jsonl(path):
-    samples = []
-    with open(path) as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                samples.append(json.loads(line))
-    return samples
-
-
-def classify_math_critical(text):
-    """Classify if a token is math-critical and return its category."""
+def classify_math_critical(text: str) -> str | None:
+    """Classify a decoded token into one math-critical category."""
     stripped = text.strip()
-    lower = stripped.lower()
-
-    # Numbers (including decimals, negatives)
+    lower = stripped.lower().lstrip("\\")
     clean = stripped.replace(",", "").replace(" ", "")
-    if clean and (clean.replace(".", "").replace("-", "").isdigit() or
-                  clean.startswith("$") and clean[1:].replace(".", "").isdigit()):
+
+    if clean and (
+        clean.replace(".", "").replace("-", "").isdigit()
+        or (clean.startswith("$") and clean[1:].replace(".", "").isdigit())
+    ):
         return "number"
-
-    # LaTeX dollar signs (often wrap math expressions)
-    if stripped == "$" or stripped == "$$":
+    if stripped in {"$", "$$"}:
         return "math_delimiter"
-
-    # Math operators
     if stripped in MATH_OPERATORS:
         return "operator"
-
-    # Variable names (single letters used as math variables)
     if lower in MATH_VARIABLES and len(stripped) <= 2:
         return "variable"
-
-    # Math functions
     if lower in MATH_FUNCTIONS:
         return "math_function"
-
-    # Math symbols (LaTeX-style)
     if lower in MATH_SYMBOLS:
         return "math_symbol"
-
-    # Math keywords (problem-relevant words)
     if lower in MATH_KEYWORDS:
         return "math_keyword"
-
-    # Names / proper nouns (capitalized, not at sentence start typically)
-    # These appear in word problems (e.g., "Steve", "Rick")
-    if stripped and stripped[0].isupper() and len(stripped) >= 2 and stripped.isalpha():
-        # Check if it's a common word that happens to be capitalized
-        common_caps = {"the", "and", "for", "that", "this", "with", "from", "what",
-                       "how", "when", "where", "which", "each", "all", "but", "not",
-                       "are", "was", "were", "been", "being", "have", "has", "had",
-                       "will", "would", "could", "should", "may", "might", "can",
-                       "let", "sol", "below", "step", "think", "wait", "okay",
-                       "now", "then", "first", "next", "since", "because", "therefore"}
-        if lower not in common_caps:
-            return "name_entity"
-
+    if (
+        stripped
+        and stripped[0].isupper()
+        and len(stripped) >= 2
+        and stripped.isalpha()
+        and lower not in COMMON_CAPITALIZED_WORDS
+    ):
+        return "name_entity"
     return None
 
 
-def analyze_math_keywords(samples, tokenizer, label):
-    """Analyze math-critical token eviction density."""
-    print(f"\n{'='*80}")
-    print(f"  MATH-CRITICAL TOKEN ANALYSIS: {label}")
-    print(f"{'='*80}")
-
-    # Per-category stats
-    cat_evicted = Counter()
-    cat_retained = Counter()
-    cat_evicted_examples = defaultdict(list)
-    cat_retained_examples = defaultdict(list)
-
-    total_evicted = 0
-    total_retained = 0
-    math_critical_evicted = 0
-    math_critical_retained = 0
-
-    for sample in samples:
-        for step in sample["eviction_steps"]:
-            for tok in step["all_tokens"]:
-                if tok.get("in_window", False):
-                    continue
-
-                text = tokenizer.decode([tok["token_id"]], skip_special_tokens=False)
-                cat = classify_math_critical(text)
-
-                if tok["retained"]:
-                    total_retained += 1
-                    if cat:
-                        math_critical_retained += 1
-                        cat_retained[cat] += 1
-                        if len(cat_retained_examples[cat]) < 5:
-                            cat_retained_examples[cat].append((tok["position"], text.strip(), tok.get("final_score")))
-                else:
-                    total_evicted += 1
-                    if cat:
-                        math_critical_evicted += 1
-                        cat_evicted[cat] += 1
-                        if len(cat_evicted_examples[cat]) < 5:
-                            cat_evicted_examples[cat].append((tok["position"], text.strip(), tok.get("final_score")))
-
-    print(f"\n  Total tokens: evicted={total_evicted}, retained={total_retained}")
-    print(f"  Math-critical: evicted={math_critical_evicted}, retained={math_critical_retained}")
-
-    mc_total = math_critical_evicted + math_critical_retained
-    if mc_total > 0:
-        evict_rate = math_critical_evicted / mc_total * 100
-        print(f"  Math-critical eviction rate: {math_critical_evicted}/{mc_total} = {evict_rate:.2f}%")
-
-    # Density: math-critical evicted / total retained
-    if total_retained > 0:
-        density = math_critical_evicted / total_retained * 100
-        print(f"  Math-critical evicted / total retained: {math_critical_evicted}/{total_retained} = {density:.4f}%")
-
-    print(f"\n  {'Category':<20s} | {'Evicted':>8s} | {'Retained':>8s} | {'Total':>8s} | {'Evict Rate':>10s}")
-    print(f"  {'-'*20}-+-{'-'*8}-+-{'-'*8}-+-{'-'*8}-+-{'-'*10}")
-
-    all_cats = sorted(set(list(cat_evicted.keys()) + list(cat_retained.keys())))
-    for cat in all_cats:
-        ev = cat_evicted.get(cat, 0)
-        ret = cat_retained.get(cat, 0)
-        tot = ev + ret
-        rate = ev / tot * 100 if tot > 0 else 0
-        print(f"  {cat:<20s} | {ev:8d} | {ret:8d} | {tot:8d} | {rate:9.1f}%")
-
-    # Show examples of evicted math-critical tokens
-    print(f"\n  Examples of EVICTED math-critical tokens:")
-    for cat in all_cats:
-        if cat_evicted_examples[cat]:
-            print(f"    [{cat}]:")
-            for pos, text, score in cat_evicted_examples[cat]:
-                score_str = f"{score:.6f}" if score is not None else "N/A"
-                print(f"      pos={pos:4d}: '{text}' (score={score_str})")
+def load_results(path: Path) -> list[dict[str, Any]]:
+    results = []
+    with path.open(encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            if not line.strip():
+                continue
+            try:
+                results.append(json.loads(line))
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"Invalid JSON on line {line_number} of {path}: {exc}") from exc
+    return results
 
 
-def compare_math_keywords(rkv_samples, lsh_samples, tokenizer, label):
-    """Compare math-critical token handling between RKV and RKV-LSH."""
-    print(f"\n{'='*80}")
-    print(f"  MATH-CRITICAL COMPARISON: RKV vs RKV-LSH ({label})")
-    print(f"{'='*80}")
+def analyze_result_file(
+    result_file: Path,
+    model_name: str,
+    include_name_entities: bool = False,
+    tokenizer=None,
+) -> dict[str, Any]:
+    if tokenizer is None:
+        from transformers import AutoTokenizer
 
-    rkv_by_id = {s["sample_id"]: s for s in rkv_samples}
-    lsh_by_id = {s["sample_id"]: s for s in lsh_samples}
-    common_ids = sorted(set(rkv_by_id.keys()) & set(lsh_by_id.keys()))
+        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+    results = load_results(result_file)
 
-    if not common_ids:
-        print("  No matching samples!")
-        return
+    category_total: Counter[str] = Counter()
+    category_retained: Counter[str] = Counter()
+    retained_examples: dict[str, list[str]] = defaultdict(list)
+    evicted_examples: dict[str, list[str]] = defaultdict(list)
+    per_sample = []
+    skipped_reasons: Counter[str] = Counter()
 
-    # Track math-critical tokens differently handled
-    lsh_evicts_math = []  # LSH evicts math-critical, RKV keeps
-    rkv_evicts_math = []  # RKV evicts math-critical, LSH keeps
+    for sample_index, sample in enumerate(results):
+        status = sample.get("retention_tracking_status")
+        if status not in {"tracked", "no_compression"}:
+            skipped_reasons[status or "missing_tracking_status"] += 1
+            continue
 
-    cat_lsh_evicts = Counter()
-    cat_rkv_evicts = Counter()
+        token_ids = sample.get("sequence_token_ids", sample.get("input_token_ids"))
+        retained_positions = sample.get("final_retained_indices")
+        tracked_length = sample.get("tracked_sequence_length")
+        if token_ids is None:
+            skipped_reasons["missing_token_ids"] += 1
+            continue
+        if retained_positions is None:
+            skipped_reasons["missing_final_retained_indices"] += 1
+            continue
+        if tracked_length is None:
+            # Compatibility for prompt-only records produced during development.
+            tracked_length = len(token_ids)
 
-    for sid in common_ids:
-        rkv_steps = {s["eviction_step"]: s for s in rkv_by_id[sid]["eviction_steps"]}
-        lsh_steps = {s["eviction_step"]: s for s in lsh_by_id[sid]["eviction_steps"]}
+        tracked_length = min(int(tracked_length), len(token_ids))
+        retained_set = {
+            int(position)
+            for position in retained_positions
+            if 0 <= int(position) < tracked_length
+        }
+        sample_total = 0
+        sample_retained = 0
+        sample_categories: Counter[str] = Counter()
+        sample_retained_categories: Counter[str] = Counter()
 
-        for step_num in sorted(set(rkv_steps.keys()) & set(lsh_steps.keys())):
-            rkv_tokens = {t["position"]: t for t in rkv_steps[step_num]["all_tokens"]
-                          if not t.get("in_window", False)}
-            lsh_tokens = {t["position"]: t for t in lsh_steps[step_num]["all_tokens"]
-                          if not t.get("in_window", False)}
+        special_ids = set(getattr(tokenizer, "all_special_ids", []))
+        for position, token_id in enumerate(token_ids[:tracked_length]):
+            if token_id in special_ids:
+                continue
+            text = tokenizer.decode([token_id], skip_special_tokens=False)
+            category = classify_math_critical(text)
+            if category is None or (category == "name_entity" and not include_name_entities):
+                continue
 
-            for pos in set(rkv_tokens.keys()) & set(lsh_tokens.keys()):
-                rkv_tok = rkv_tokens[pos]
-                lsh_tok = lsh_tokens[pos]
-                text = tokenizer.decode([rkv_tok["token_id"]], skip_special_tokens=False)
-                cat = classify_math_critical(text)
+            category_total[category] += 1
+            sample_categories[category] += 1
+            sample_total += 1
+            if position in retained_set:
+                category_retained[category] += 1
+                sample_retained_categories[category] += 1
+                sample_retained += 1
+                if len(retained_examples[category]) < 10:
+                    retained_examples[category].append(text)
+            elif len(evicted_examples[category]) < 10:
+                evicted_examples[category].append(text)
 
-                if not cat:
-                    continue
+        per_sample.append(
+            {
+                "sample_index": sample_index,
+                "critical_total": sample_total,
+                "critical_retained": sample_retained,
+                "retention_rate": sample_retained / sample_total if sample_total else None,
+                "category_total": dict(sample_categories),
+                "category_retained": dict(sample_retained_categories),
+            }
+        )
 
-                # LSH evicts math-critical, RKV keeps
-                if not lsh_tok["retained"] and rkv_tok["retained"]:
-                    cat_lsh_evicts[cat] += 1
-                    if len(lsh_evicts_math) < 20:
-                        lsh_evicts_math.append({
-                            "sid": sid, "step": step_num, "pos": pos,
-                            "text": text.strip(), "cat": cat,
-                            "rkv_score": rkv_tok.get("final_score"),
-                            "lsh_score": lsh_tok.get("final_score"),
-                        })
+    categories = {}
+    for category in sorted(category_total):
+        total = category_total[category]
+        retained = category_retained[category]
+        categories[category] = {
+            "total": total,
+            "retained": retained,
+            "evicted": total - retained,
+            "retention_rate": retained / total if total else None,
+            "retained_examples": retained_examples[category],
+            "evicted_examples": evicted_examples[category],
+        }
 
-                # RKV evicts math-critical, LSH keeps
-                if not rkv_tok["retained"] and lsh_tok["retained"]:
-                    cat_rkv_evicts[cat] += 1
-                    if len(rkv_evicts_math) < 20:
-                        rkv_evicts_math.append({
-                            "sid": sid, "step": step_num, "pos": pos,
-                            "text": text.strip(), "cat": cat,
-                            "rkv_score": rkv_tok.get("final_score"),
-                            "lsh_score": lsh_tok.get("final_score"),
-                        })
+    total = sum(category_total.values())
+    retained = sum(category_retained.values())
+    if not per_sample:
+        reasons = ", ".join(
+            f"{reason}={count}" for reason, count in sorted(skipped_reasons.items())
+        )
+        raise ValueError(
+            "No analyzable samples found. Run evaluate.py with --track_tokens=true "
+            f"using a supported press. Skipped: {reasons or 'no records'}"
+        )
 
-    total_lsh = sum(cat_lsh_evicts.values())
-    total_rkv = sum(cat_rkv_evicts.values())
+    return {
+        "result_file": str(result_file),
+        "model_name": model_name,
+        "retention_tracking_scope": "layer_0_kv_head_0",
+        "include_name_entities": include_name_entities,
+        "num_result_samples": len(results),
+        "num_analyzed_samples": len(per_sample),
+        "num_skipped_samples": len(results) - len(per_sample),
+        "skipped_reasons": dict(skipped_reasons),
+        "critical_total": total,
+        "critical_retained": retained,
+        "critical_evicted": total - retained,
+        "critical_token_retention_rate": retained / total if total else None,
+        # Explicit aliases make the JSON self-describing.
+        "math_critical_total": total,
+        "math_critical_retained": retained,
+        "math_critical_evicted": total - retained,
+        "math_critical_retention_rate": retained / total if total else None,
+        "categories": categories,
+        "per_sample": per_sample,
+    }
 
-    print(f"\n  Math-critical tokens LSH evicts but RKV keeps: {total_lsh}")
-    for cat, cnt in cat_lsh_evicts.most_common():
-        print(f"    {cat:<20s}: {cnt}")
 
-    print(f"\n  Math-critical tokens RKV evicts but LSH keeps: {total_rkv}")
-    for cat, cnt in cat_rkv_evicts.most_common():
-        print(f"    {cat:<20s}: {cnt}")
+def print_report(report: dict[str, Any]) -> None:
+    print("=" * 80)
+    print("MATH-CRITICAL TOKEN RETENTION")
+    print("=" * 80)
+    print(f"Result file: {report['result_file']}")
+    print(f"Tracking scope: {report['retention_tracking_scope']}")
+    print(f"Analyzed samples: {report['num_analyzed_samples']}")
+    print(f"Skipped samples: {report['num_skipped_samples']}")
+    print()
 
-    if lsh_evicts_math:
-        print(f"\n  Examples: LSH evicts math-critical, RKV keeps:")
-        for ex in lsh_evicts_math:
-            print(f"    Pos {ex['pos']:4d} | '{ex['text']}' [{ex['cat']}] | "
-                  f"RKV={ex['rkv_score']:.6f}, LSH={ex['lsh_score']:.6f}")
+    rate = report["critical_token_retention_rate"]
+    rate_text = f"{rate:.2%}" if rate is not None else "N/A"
+    print(
+        "Overall: "
+        f"{report['critical_retained']}/{report['critical_total']} retained "
+        f"({rate_text})"
+    )
+    print()
+    print(f"{'Category':<20} {'Retained':>10} {'Evicted':>10} {'Total':>10} {'Rate':>10}")
+    print("-" * 64)
+    for category, values in report["categories"].items():
+        category_rate = values["retention_rate"]
+        category_rate_text = f"{category_rate:.2%}" if category_rate is not None else "N/A"
+        print(
+            f"{category:<20} {values['retained']:>10} {values['evicted']:>10} "
+            f"{values['total']:>10} {category_rate_text:>10}"
+        )
 
-    if rkv_evicts_math:
-        print(f"\n  Examples: RKV evicts math-critical, LSH keeps:")
-        for ex in rkv_evicts_math:
-            print(f"    Pos {ex['pos']:4d} | '{ex['text']}' [{ex['cat']}] | "
-                  f"RKV={ex['rkv_score']:.6f}, LSH={ex['lsh_score']:.6f}")
+    if report["skipped_reasons"]:
+        print()
+        print(f"Skipped reasons: {report['skipped_reasons']}")
 
 
-def main():
-    print("Loading tokenizers...")
-    tok_7b = AutoTokenizer.from_pretrained("deepseek-ai/DeepSeek-R1-Distill-Qwen-7B")
-    tok_14b = AutoTokenizer.from_pretrained("deepseek-ai/DeepSeek-R1-Distill-Qwen-14B")
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Calculate final KV-cache retention of math-critical tokens."
+    )
+    parser.add_argument("--result_file", type=Path, required=True)
+    parser.add_argument("--model_name", required=True)
+    parser.add_argument(
+        "--include_name_entities",
+        action="store_true",
+        help="Include capitalized names as critical tokens.",
+    )
+    parser.add_argument(
+        "--output_file",
+        type=Path,
+        help="Optional JSON file for the complete aggregate and per-sample report.",
+    )
+    args = parser.parse_args()
 
-    print("Loading data...")
-    data_7b_rkv = load_jsonl(FILES["7b_rkv"])
-    data_14b_rkv = load_jsonl(FILES["14b_rkv"])
-    data_14b_lsh = load_jsonl(FILES["14b_rkvlsh"])
-
-    # Per-method analysis
-    analyze_math_keywords(data_7b_rkv, tok_7b, "Qwen-7B RKV")
-    analyze_math_keywords(data_14b_rkv, tok_14b, "Qwen-14B RKV")
-    analyze_math_keywords(data_14b_lsh, tok_14b, "Qwen-14B RKV-LSH")
-
-    # Direct comparison
-    compare_math_keywords(data_14b_rkv, data_14b_lsh, tok_14b, "Qwen-14B")
-
-    print(f"\n{'='*80}")
-    print("  DONE")
-    print(f"{'='*80}")
+    report = analyze_result_file(
+        args.result_file,
+        args.model_name,
+        include_name_entities=args.include_name_entities,
+    )
+    print_report(report)
+    if args.output_file:
+        args.output_file.parent.mkdir(parents=True, exist_ok=True)
+        with args.output_file.open("w", encoding="utf-8") as handle:
+            json.dump(report, handle, indent=2)
+        print(f"\nSaved JSON report to {args.output_file}")
 
 
 if __name__ == "__main__":

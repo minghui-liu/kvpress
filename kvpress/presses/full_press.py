@@ -27,7 +27,11 @@ class FullPress(BasePress):
                 all_token_ids = self.input_tokens.cpu().tolist() + list(range(len(self.input_tokens), kv_len))
                 retained_token_ids = all_token_ids.copy()  # All tokens retained
             self.track_generation_step(all_token_ids, retained_token_ids, self.tokenizer)
+            self.track_retained_cache_positions(kv_len, list(range(kv_len)))
         return keys, values
     
     def compress_prefilling(self, module, hidden_states, keys, values, attentions, kwargs):
+        if getattr(module, "layer_idx", 0) == 0:
+            q_len = keys.shape[2]
+            self.track_retained_cache_positions(q_len, list(range(q_len)))
         return keys, values

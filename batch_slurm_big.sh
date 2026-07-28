@@ -191,6 +191,7 @@ fi
 
 echo "➡️  Running $DATASET | press=$PRESS_METHOD | budget=$CACHE_BUDGET | lambda=$LAMBDA | seed=$RANDOM_SEED | block=$DATASET_BLOCK_INDEX/${NUM_BLOCKS} | model=$MODEL_NAME | gpus=$NUM_GPUS"
 python "$SCRIPT_PATH" \
+  --result_dir="$RESULT_DIR" \
   --dataset="$DATASET" \
   --model_name="$MODEL_NAME" \
   --press_name="$PRESS_METHOD" \

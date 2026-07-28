@@ -224,6 +224,7 @@ def run_experiment(
     cmd = [
         "python",
         SCRIPT_PATH,
+        f"--result_dir={RESULT_DIR}",
         f"--dataset={dataset}",
         f"--model_name={model_name}",
         f"--press_name={press_name}",

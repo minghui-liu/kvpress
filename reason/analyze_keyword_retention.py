@@ -7,11 +7,9 @@ import json
 import argparse
 from pathlib import Path
 from collections import defaultdict
-from keyword_tracker import extract_keywords, tokenize_keywords, track_token_retention
-from transformers import AutoTokenizer
 
 
-def analyze_keyword_retention_from_results(result_file: Path, model_name: str):
+def analyze_keyword_retention_from_results(result_file: Path, model_name: str = ""):
     """
     Analyze keyword retention from evaluation results.
     
@@ -20,11 +18,8 @@ def analyze_keyword_retention_from_results(result_file: Path, model_name: str):
     result_file : Path
         Path to JSONL result file
     model_name : str
-        Model name for tokenizer
+        Retained for CLI compatibility; stored retention metrics do not require a tokenizer.
     """
-    # Load tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    
     # Load results
     results = []
     with open(result_file, 'r') as f:
@@ -43,7 +38,15 @@ def analyze_keyword_retention_from_results(result_file: Path, model_name: str):
         'objects_total': 0,
     })
     
+    skipped_untracked = 0
+    overall_retained = 0
+    overall_total = 0
+
     for result in results:
+        tracking_status = result.get("retention_tracking_status")
+        if tracking_status not in ("tracked", "no_compression"):
+            skipped_untracked += 1
+            continue
         if 'keyword_retention' not in result:
             continue
         
@@ -53,6 +56,8 @@ def analyze_keyword_retention_from_results(result_file: Path, model_name: str):
                 stats[key_type]['total_problems'] += 1
                 stats[key_type][f'{key_type}_retained'] += retention[key_type].get('retained_count', 0)
                 stats[key_type][f'{key_type}_total'] += retention[key_type].get('total_count', 0)
+                overall_retained += retention[key_type].get('retained_count', 0)
+                overall_total += retention[key_type].get('total_count', 0)
     
     # Print summary
     print(f"\n{'='*60}")
@@ -69,6 +74,18 @@ def analyze_keyword_retention_from_results(result_file: Path, model_name: str):
             print(f"  Retained keyword tokens: {s[f'{key_type}_retained']}")
             print(f"  Retention rate: {retention_rate:.2%}")
             print()
+
+    if overall_total > 0:
+        print("All critical keyword categories:")
+        print(f"  Retained keyword tokens: {overall_retained} / {overall_total}")
+        print(f"  Critical token retention rate: {overall_retained / overall_total:.2%}")
+        print()
+
+    if skipped_untracked:
+        print(
+            f"Warning: skipped {skipped_untracked} result(s) without reliable "
+            "retention tracking. Re-run them with --track_tokens=true using a supported press."
+        )
     
     return stats
 
@@ -76,8 +93,12 @@ def analyze_keyword_retention_from_results(result_file: Path, model_name: str):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--result_file", type=str, required=True, help="Path to JSONL result file")
-    parser.add_argument("--model_name", type=str, required=True, help="Model name for tokenizer")
+    parser.add_argument(
+        "--model_name",
+        type=str,
+        default="",
+        help="Deprecated compatibility argument; no longer required",
+    )
     args = parser.parse_args()
     
     analyze_keyword_retention_from_results(Path(args.result_file), args.model_name)
-

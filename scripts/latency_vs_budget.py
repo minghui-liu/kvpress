@@ -23,6 +23,8 @@ data = {
     "SnapKV-D": [0.493, 0.171, 0.183, 0.196],
     "KNorm": [0.097, 0.100, 0.089, 0.053],
     "StreamingLLM": [0.107, 0.102, 0.084, 0.073],
+    "SCOPE": [0.857, 0.853, 0.856, 0.855],
+    "RPC": [1.561, 1.561, 1.561, 1.561],
 }
 
 styles = {
@@ -30,13 +32,15 @@ styles = {
     "SnapKV-D": {"color": "#ff7f0e"},
     "KNorm": {"color": "#2ca02c"},
     "StreamingLLM": {"color": "#d62728"},
+    "SCOPE": {"color": "#9467bd"},
+    "RPC": {"color": "#8c564b"},
 }
 
 
 def main():
     fig, ax = plt.subplots(figsize=(6, 3))
 
-    for method in ["H2O", "SnapKV-D", "KNorm", "StreamingLLM"]:
+    for method in ["H2O", "SnapKV-D", "KNorm", "StreamingLLM", "SCOPE", "RPC"]:
         ax.plot(
             budgets,
             data[method],
@@ -51,7 +55,7 @@ def main():
     ax.set_ylabel("Avg. Time per Token (ms)")
     ax.set_xticks(budgets)
     ax.set_xlim(112, 528)
-    ax.set_ylim(0, 0.55)
+    ax.set_ylim(0, 1.9)
     ax.grid(True, linestyle="--", alpha=0.65)
 
     ax.spines["top"].set_visible(False)
@@ -59,8 +63,8 @@ def main():
 
     ax.legend(
         loc="upper center",
-        bbox_to_anchor=(0.58, 1.12),
-        ncol=2,
+        bbox_to_anchor=(0.5, 1.16),
+        ncol=3,
         frameon=True,
         columnspacing=1.6,
         handlelength=2.2,

@@ -499,9 +499,11 @@ class RKVLSHPress(ScorerPress):
         attentions: torch.Tensor,
         kwargs: dict,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        if self.cache_budget == 0:
-            return keys, values
         kv_len = keys.shape[2]
+        if self.cache_budget == 0:
+            if getattr(module, "layer_idx", 0) == 0:
+                self.track_retained_cache_positions(kv_len, list(range(kv_len)))
+            return keys, values
         layer_idx = getattr(module, "layer_idx", 0)
         if self.cache_budget >= kv_len:
             # All tokens retained, track if needed
@@ -510,11 +512,11 @@ class RKVLSHPress(ScorerPress):
                 if self.tokenizer is not None and self.input_tokens is not None:
                     if kv_len <= len(self.input_tokens):
                         all_token_ids = self.input_tokens[:kv_len].cpu().tolist()
-                        retained_token_ids = all_token_ids.copy()
                     else:
                         all_token_ids = self.input_tokens.cpu().tolist() + list(range(len(self.input_tokens), kv_len))
-                        retained_token_ids = all_token_ids.copy()
+                    retained_token_ids = all_token_ids.copy()
                     self.track_generation_step(all_token_ids, retained_token_ids, self.tokenizer)
+                self.track_retained_cache_positions(kv_len, list(range(kv_len)))
             return keys, values
         
         # Initialize hidden size if not set
@@ -538,21 +540,17 @@ class RKVLSHPress(ScorerPress):
         # Only track if tokenizer is set (track_tokens == True)
         if layer_idx == 0:
             if self.tokenizer is not None and self.input_tokens is not None:
-                # Map position indices to actual token IDs
-                # CPU transfer only happens here for token tracking - computation stays on GPU
-                if kv_len <= len(self.input_tokens):
-                    all_token_ids = self.input_tokens[:kv_len].cpu().tolist()
-                    retained_positions = indices[0, 0, :, 0].cpu().tolist()  # Get retained position indices
-                    retained_token_ids = [all_token_ids[pos] for pos in retained_positions]
-                else:
-                    # If kv_len > input_tokens, we have generated tokens
-                    all_token_ids = self.input_tokens.cpu().tolist() + list(range(len(self.input_tokens), kv_len))
-                    retained_positions = indices[0, 0, :, 0].cpu().tolist()
-                    retained_token_ids = [all_token_ids[pos] if pos < len(self.input_tokens) else pos for pos in retained_positions]
+                all_token_ids = self.get_tracked_cache_token_ids(kv_len)
+                retained_positions = indices[0, 0, :, 0].cpu().tolist()
+                retained_token_ids = [all_token_ids[pos] for pos in retained_positions]
                 self.track_generation_step(all_token_ids, retained_token_ids, self.tokenizer)
 
             # Log qualitative decisions if enabled
             self.log_qualitative_decisions(indices, kv_len)
+            self.track_retained_cache_positions(
+                kv_len,
+                indices[0, 0, :, 0].detach().cpu().tolist(),
+            )
 
         # Prune keys and values
         keys = keys.gather(2, indices).contiguous()
@@ -597,10 +595,7 @@ class RKVLSHPress(ScorerPress):
             return
 
         # Get all token IDs in the current cache
-        if kv_len <= len(self.input_tokens):
-            all_token_ids = self.input_tokens[:kv_len].cpu().tolist()
-        else:
-            all_token_ids = self.input_tokens.cpu().tolist() + list(range(len(self.input_tokens), kv_len))
+        all_token_ids = self.get_tracked_cache_token_ids(kv_len)
 
         # Get which positions were retained (kept in cache)
         retained_positions = set(indices[0, 0, :, 0].cpu().tolist())

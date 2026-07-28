@@ -74,18 +74,17 @@ def run_experiment_with_tracking() -> str:
     cmd = [
         "python",
         SCRIPT_PATH,
+        "--result_dir", RESULT_DIR,
         "--model_name", MODEL,
         "--dataset", DATASET,
-        "--press_method", PRESS_NAME,
+        "--press_name", PRESS_NAME,
         "--cache_budget", str(CACHE_BUDGET),
         "--n_hash_buckets", str(N_HASH_BUCKETS),
         "--lam", str(LAMBDA),
         "--num_samples", str(NUM_SAMPLES),
         "--max_new_tokens", str(MAX_NEW_TOKENS),
-        "--seed", str(RANDOM_SEED),
-        "--out_file", out_file,
-        "--score_file", score_file,
-        "--track_buckets",  # Enable bucket tracking
+        "--random_seed", str(RANDOM_SEED),
+        "--track_buckets=true",
     ]
     
     print(f"Command: {' '.join(cmd)}\n")

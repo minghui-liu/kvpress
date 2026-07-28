@@ -226,6 +226,18 @@ PRESS_DICT = {
     "turboquant": TurboQuantPress(),
 }
 
+POSITION_RETENTION_TRACKING_PRESSES = {
+    "full",
+    "h2o",
+    "knorm",
+    "random",
+    "rkv",
+    "rkvlsh",
+    "snapkv",
+    "snapkv_press",
+    "streaming_llm",
+}
+
 
 def output_attentions(press: BasePress):
     if isinstance(press, (H2OPress, KnormPress, StreamingLLMPress)):
@@ -312,6 +324,7 @@ def evaluate(
     temperature: float = 0.6,
     top_p: float = 0.9,
     run_tag: str = "",
+    result_dir: Optional[str] = None,
 ):
     """
     Evaluate a model on a dataset using a press and save the results
@@ -373,6 +386,8 @@ def evaluate(
     run_tag : str, optional
         Optional tag (e.g. "run1") appended to the output filename, useful for repeated runs with the same
         configuration/seed to measure sampling variance, by default "" (no tag)
+    result_dir : str, optional
+        Directory for result JSONL and score JSON files. Defaults to reason/results.
     measure_memory : bool, optional
         Whether to measure separate prefill and decoding peak GPU allocations, by default True
     measure_latency : bool, optional
@@ -445,8 +460,9 @@ def evaluate(
 
     tensor_device = _resolve_tensor_device()
 
-    save_dir = Path(__file__).parent / "results"
-    save_dir.mkdir(exist_ok=True)
+    save_dir = Path(result_dir).expanduser() if result_dir else Path(__file__).parent / "results"
+    save_dir.mkdir(parents=True, exist_ok=True)
+    print(f"Result directory: {save_dir.resolve()}")
     if "rkv" in press_name:
         # Format lambda with 3 decimal places, then format for filename
         # e.g., 0.01 -> "001", 0.05 -> "005", 0.1 -> "01", 1.0 -> "1"
@@ -581,6 +597,21 @@ def evaluate(
             press.window_size = rpc_window_size
             press.compress_interval = rpc_compress_interval
             press.kernel_size = rpc_kernel_size
+
+        if enable_qualitative_analysis:
+            if press is None or not hasattr(press, "enable_qualitative_mode"):
+                raise ValueError(
+                    "--enable_qualitative_analysis is only supported by presses "
+                    "that implement enable_qualitative_mode (currently rkv and rkvlsh)."
+                )
+            qualitative_filename = (
+                f"{save_filename.stem}__token_decisions.jsonl"
+            )
+            press.enable_qualitative_mode(
+                output_file=qualitative_filename,
+                model_name=model_name.replace("/", "--"),
+                press_name=press_name,
+            )
 
         # Presses that consume attentions need eager attention.
         attention_config = {}
@@ -806,6 +837,7 @@ def evaluate(
             output_token_count = outputs[0].shape[0] - input_token_count
             response_token_length = output_token_count
             total_token_count = outputs[0].shape[0]
+            sequence_token_ids = outputs[0].detach().cpu().tolist() if track_tokens else []
             
             phase_metrics["output_tokens_per_second"] = (
                 output_token_count / phase_metrics["decoding_time"]
@@ -880,51 +912,65 @@ def evaluate(
             
             if track_tokens and not is_seer_attention_none:
                 # Track keyword retention if press tracks retention
-                # NonePress doesn't track retention, so skip if it's NonePress
                 keyword_retention = {}
-                if press is not None and not isinstance(press, NonePress) and hasattr(press, 'get_final_retained_indices'):
+                final_retained_indices = []
+                tracked_sequence_length = 0
+                retention_tracking_status = "unavailable"
+                if (
+                    press is not None
+                    and not isinstance(press, NonePress)
+                    and press_name in POSITION_RETENTION_TRACKING_PRESSES
+                    and hasattr(press, "retention_tracking_is_reliable")
+                    and press.retention_tracking_is_reliable()
+                ):
                     final_retained_indices = list(press.get_final_retained_indices())
-                    if final_retained_indices:
-                        retention_results = track_token_retention(
-                            input_token_ids,
-                            final_retained_indices,
-                            keyword_token_ids
-                        )
-                        keyword_retention = {
-                            key_type: {
-                                'total_count': results['total_keyword_tokens'],
-                                'retained_count': results['retained_keyword_tokens'],
-                                'evicted_count': results['evicted_keyword_tokens'],
-                                'retention_rate': results['retention_rate']
-                            }
-                            for key_type, results in retention_results.items()
-                        }
-                    else:
-                        # If no retention tracking, mark all as retained (full cache)
-                        keyword_retention = {
-                            key_type: {
-                                'total_count': len(token_set),
-                                'retained_count': len(token_set),
-                                'evicted_count': 0,
-                                'retention_rate': 1.0
-                            }
-                            for key_type, token_set in keyword_token_ids.items()
-                        }
-                else:
-                    # For full press or no press, all tokens are retained
+                    tracked_sequence_length = press.get_tracked_sequence_length()
+                    retention_results = track_token_retention(
+                        input_token_ids,
+                        final_retained_indices,
+                        keyword_token_ids
+                    )
                     keyword_retention = {
                         key_type: {
-                            'total_count': len(token_set),
-                            'retained_count': len(token_set),
-                            'evicted_count': 0,
-                            'retention_rate': 1.0
+                            'total_count': results['total_keyword_tokens'],
+                            'retained_count': results['retained_keyword_tokens'],
+                            'evicted_count': results['evicted_keyword_tokens'],
+                            'retention_rate': results['retention_rate']
                         }
-                        for key_type, token_set in keyword_token_ids.items()
+                        for key_type, results in retention_results.items()
                     }
+                    retention_tracking_status = "tracked"
+                elif press is None or isinstance(press, NonePress):
+                    # No compression means every input position is genuinely retained.
+                    tracked_sequence_length = max(total_token_count - 1, input_token_count)
+                    final_retained_indices = list(range(tracked_sequence_length))
+                    retention_results = track_token_retention(
+                        input_token_ids,
+                        list(range(len(input_token_ids))),
+                        keyword_token_ids,
+                    )
+                    keyword_retention = {
+                        key_type: {
+                            'total_count': results['total_keyword_tokens'],
+                            'retained_count': results['retained_keyword_tokens'],
+                            'evicted_count': results['evicted_keyword_tokens'],
+                            'retention_rate': results['retention_rate']
+                        }
+                        for key_type, results in retention_results.items()
+                    }
+                    retention_tracking_status = "no_compression"
+                else:
+                    retention_tracking_status = "unsupported_for_press"
                 
                 # Add keyword retention to save_obj
                 save_obj['keywords'] = keywords
                 save_obj['keyword_retention'] = keyword_retention
+                save_obj['retention_tracking_status'] = retention_tracking_status
+                save_obj['input_token_ids'] = input_token_ids
+                save_obj['sequence_token_ids'] = sequence_token_ids
+                save_obj['final_retained_indices'] = sorted(final_retained_indices)
+                save_obj['tracked_sequence_length'] = tracked_sequence_length
+                save_obj['retention_tracking_scope'] = "layer_0_kv_head_0"
                 
                 generation_steps = []
                 if not is_seer_attention_none and press is not None and not isinstance(press, NonePress) and hasattr(press, 'get_generation_steps'):
@@ -936,6 +982,7 @@ def evaluate(
                 save_obj['keywords'] = {}
                 save_obj['keyword_retention'] = {}
                 save_obj['generation_steps'] = []
+                save_obj['retention_tracking_status'] = "disabled"
             
             # Add bucket counts if tracking is enabled
             if track_buckets and press is not None and hasattr(press, 'get_bucket_counts'):
@@ -1123,6 +1170,7 @@ def evaluate(
     metrics["random_seed"] = random_seed
     metrics["measure_memory"] = measure_memory
     metrics["measure_latency"] = measure_latency
+    metrics["result_dir"] = str(save_dir)
     if save_obj and all(obj.get("generation_phase_metrics_version") == 1 for obj in save_obj):
         metrics["generation_phase_metrics_version"] = 1
 
