@@ -15,6 +15,8 @@ set -euo pipefail
 # Environment
 # =====================
 source /home/dixi/.cache/pypoetry/virtualenvs/kvpress-CimsZS3I-py3.10/bin/activate
+# Do not mix packages from ~/.local with this virtual environment.
+export PYTHONNOUSERSITE=1
 
 # =====================
 # Hugging Face / CUDA
