@@ -63,6 +63,9 @@ class RPCPress(ScorerPress):
         self._prompt_len[layer_idx] = keys.shape[2]
         self._n_selected[layer_idx] = 0
         self._recent_hidden[layer_idx] = []
+        # Prompt is fully retained: record 100% prompt retention (layer 0, no-op unless tracking on).
+        if layer_idx == 0 and self.tokenizer is not None:
+            self.track_retained_cache_positions(keys.shape[2], list(range(keys.shape[2])))
         return keys, values
 
     @staticmethod
@@ -138,8 +141,14 @@ class RPCPress(ScorerPress):
         scores = scores.view(bsz, num_key_value_heads, num_key_value_groups, -1).mean(2)
         scores = F.avg_pool1d(scores, kernel_size=self.kernel_size, padding=self.kernel_size // 2, stride=1)
 
-        indices = scores.topk(n_keep, dim=-1).indices.sort(dim=-1).values
-        indices = indices.unsqueeze(-1).expand(-1, -1, -1, head_dim)
+        mid_indices = scores.topk(n_keep, dim=-1).indices.sort(dim=-1).values
+        # Retention tracking (head 0, layer 0): full prompt + kept reasoning tokens +
+        # always-kept recent window. No-op unless tracking is enabled.
+        if layer_idx == 0 and self.tokenizer is not None:
+            mid = [prompt_len + i for i in mid_indices[0, 0].detach().cpu().tolist()]
+            retained = list(range(prompt_len)) + mid + list(range(kv_len - self.window_size, kv_len))
+            self.track_retained_cache_positions(kv_len, retained)
+        indices = mid_indices.unsqueeze(-1).expand(-1, -1, -1, head_dim)
 
         k_prompt = keys[:, :, :prompt_len, :]
         v_prompt = values[:, :, :prompt_len, :]

@@ -89,7 +89,11 @@ class PyramidKVPress(SnapKVPress):
             return keys, values
 
         kv_len = keys.shape[2]
+        layer_idx = getattr(module, "layer_idx", 0)
         if self.get_layer_budget(module, kv_len) >= kv_len:
+            # All tokens kept at this layer: record full retention (layer 0 only).
+            if layer_idx == 0 and self.tokenizer is not None:
+                self.track_retained_cache_positions(kv_len, list(range(kv_len)))
             return keys, values
 
         # Compute scores
@@ -101,8 +105,12 @@ class PyramidKVPress(SnapKVPress):
 
         # Get indices of KV pairs with the lowest scores
         n_kept = self.get_layer_budget(module, kv_len)
-        indices = scores.topk(n_kept, dim=-1).indices
-        indices = indices.unsqueeze(-1).expand(-1, -1, -1, module.head_dim)
+        topk_indices = scores.topk(n_kept, dim=-1).indices
+        # Retention tracking (head 0, layer 0) before pruning; no-op unless tracking on.
+        if layer_idx == 0 and self.tokenizer is not None:
+            retained_positions = sorted(topk_indices[0, 0].detach().cpu().tolist())
+            self.track_retained_cache_positions(kv_len, retained_positions)
+        indices = topk_indices.unsqueeze(-1).expand(-1, -1, -1, module.head_dim)
 
         # Prune keys and values
         keys = keys.gather(2, indices).contiguous()

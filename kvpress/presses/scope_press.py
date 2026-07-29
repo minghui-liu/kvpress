@@ -103,8 +103,14 @@ class SCOPEPress(PyramidKVPress):
         scores = scores.view(bsz, num_key_value_heads, num_key_value_groups, kv_len).mean(2)
 
         past_scores = scores[..., : -self.decoding_window_size]
-        indices = past_scores.topk(n_keep, dim=-1).indices.sort(dim=-1).values
-        indices = indices.unsqueeze(-1).expand(-1, -1, -1, head_dim)
+        past_indices = past_scores.topk(n_keep, dim=-1).indices.sort(dim=-1).values
+        # Retention tracking (head 0, layer 0): kept past positions + the always-kept
+        # recent window. No-op unless tracking is enabled.
+        if layer_idx == 0 and self.tokenizer is not None:
+            kept = past_indices[0, 0].detach().cpu().tolist()
+            window_positions = list(range(kv_len - self.decoding_window_size, kv_len))
+            self.track_retained_cache_positions(kv_len, kept + window_positions)
+        indices = past_indices.unsqueeze(-1).expand(-1, -1, -1, head_dim)
 
         k_past = keys[:, :, : -self.decoding_window_size, :].gather(2, indices)
         v_past = values[:, :, : -self.decoding_window_size, :].gather(2, indices)

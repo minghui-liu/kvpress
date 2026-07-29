@@ -236,6 +236,8 @@ POSITION_RETENTION_TRACKING_PRESSES = {
     "snapkv",
     "snapkv_press",
     "streaming_llm",
+    "scope",
+    "rpc",
 }
 
 
