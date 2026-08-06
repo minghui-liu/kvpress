@@ -7,7 +7,7 @@ import logging
 import os
 from pathlib import Path
 from typing import Optional
-from time import time
+from time import perf_counter
 
 import torch
 from datasets import load_dataset
@@ -70,31 +70,152 @@ from kvpress import (
 logger = logging.getLogger(__name__)
 
 
+def _tensor_storage_nbytes(value, device: torch.device, seen_storages: set) -> int:
+    """Return unique storage bytes for tensors belonging to ``device``."""
+    if not isinstance(value, torch.Tensor) or value.device != device:
+        return 0
+    try:
+        storage = value.untyped_storage()
+        storage_id = (value.device.type, value.device.index, storage.data_ptr())
+        if storage_id in seen_storages:
+            return 0
+        seen_storages.add(storage_id)
+        return storage.nbytes()
+    except (AttributeError, RuntimeError):
+        # Tensor subclasses do not always expose an untyped storage.
+        storage_id = id(value)
+        if storage_id in seen_storages:
+            return 0
+        seen_storages.add(storage_id)
+        try:
+            return value.nelement() * value.element_size()
+        except (AttributeError, RuntimeError, TypeError):
+            logger.debug("Unable to measure storage for tensor subclass %s", type(value).__name__)
+            return 0
+
+
+def cache_nbytes(cache, device: torch.device) -> int:
+    """Measure tensor storage owned by a Transformers cache on one CUDA device.
+
+    Cache implementations vary across Transformers releases (lists of tensors,
+    DynamicLayer objects, and quantized cache objects). Walking the cache object
+    makes this work for all of them while storage de-duplication avoids counting
+    tensor views twice.
+    """
+    seen_objects = set()
+    seen_storages = set()
+
+    def visit(value) -> int:
+        if isinstance(value, torch.Tensor):
+            tensor_bytes = _tensor_storage_nbytes(value, device, seen_storages)
+            if tensor_bytes or type(value) is torch.Tensor:
+                return tensor_bytes
+            # Wrapper tensor subclasses (for example quantized cache tensors)
+            # may expose their payload only through Python attributes.
+        if value is None or isinstance(value, (str, bytes, int, float, bool, torch.dtype, torch.device)):
+            return 0
+
+        object_id = id(value)
+        if object_id in seen_objects:
+            return 0
+        seen_objects.add(object_id)
+
+        if isinstance(value, dict):
+            return sum(visit(item) for item in value.values())
+        if isinstance(value, (list, tuple, set)):
+            return sum(visit(item) for item in value)
+
+        attributes = getattr(value, "__dict__", None)
+        if attributes is None:
+            return 0
+        return sum(visit(item) for item in attributes.values())
+
+    return visit(cache)
+
+
 class GenerationPhaseTracker(LogitsProcessor):
-    """Measure generation wall time and peak allocation on each side of prefill."""
+    """Profile generation peaks and the actual KV-cache storage."""
 
     def __init__(self, device: str, measure_memory: bool, measure_latency: bool):
         self.device = torch.device(device)
+        if self.device.type == "cuda" and self.device.index is None:
+            self.device = torch.device("cuda", torch.cuda.current_device())
         self.measure_memory = measure_memory and self.device.type == "cuda"
+        self.devices = [self.device] if self.device.type == "cuda" else []
         self.measure_latency = measure_latency
         self.prefill_memory_usage = 0.0
         self.decoding_memory_usage = 0.0
+        self.baseline_memory_usage = 0.0
+        self.peak_memory_usage = 0.0
+        self.baseline_reserved_memory = 0.0
+        self.prefill_reserved_memory = 0.0
+        self.decoding_reserved_memory = 0.0
+        self.peak_reserved_memory = 0.0
+        self.prefill_cache_memory = 0.0
+        self.peak_cache_memory = 0.0
+        self.final_cache_memory = 0.0
         self.prefill_time = 0.0
         self.decoding_time = 0.0
         self._generation_start = None
         self._decoding_start = None
+        self._model_hook = None
+        self._prefill_cache_recorded = False
 
     def _synchronize(self):
-        if self.device.type == "cuda":
-            torch.cuda.synchronize(self.device)
+        for profile_device in self.devices:
+            torch.cuda.synchronize(profile_device)
 
-    def start(self):
+    def _discover_model_devices(self, model):
+        devices = {self.device}
+        for entry in (getattr(model, "hf_device_map", None) or {}).values():
+            if isinstance(entry, int):
+                devices.add(torch.device("cuda", entry))
+            elif isinstance(entry, torch.device) and entry.type == "cuda":
+                resolved = entry
+                if resolved.index is None:
+                    resolved = torch.device("cuda", torch.cuda.current_device())
+                devices.add(resolved)
+            elif isinstance(entry, str) and (entry == "cuda" or entry.startswith("cuda:")):
+                resolved = torch.device(entry)
+                if resolved.index is None:
+                    resolved = torch.device("cuda", torch.cuda.current_device())
+                devices.add(resolved)
+        self.devices = sorted(devices, key=lambda item: item.index or 0)
+
+    def _sum_cuda_stat(self, stat) -> float:
+        return sum(stat(profile_device) for profile_device in self.devices) / 1024**3
+
+    def _reset_peak_stats(self):
+        for profile_device in self.devices:
+            torch.cuda.reset_peak_memory_stats(profile_device)
+
+    def _record_cache(self, module, args, kwargs, output):
+        cache = getattr(output, "past_key_values", None)
+        if cache is None and isinstance(output, dict):
+            cache = output.get("past_key_values")
+        if cache is None:
+            return
+
+        cache_gb = sum(cache_nbytes(cache, profile_device) for profile_device in self.devices) / 1024**3
+        if not self._prefill_cache_recorded:
+            self.prefill_cache_memory = cache_gb
+            self._prefill_cache_recorded = True
+        self.final_cache_memory = cache_gb
+        self.peak_cache_memory = max(self.peak_cache_memory, cache_gb)
+
+    def start(self, model=None):
         """Start immediately before ``model.generate``."""
+        if self.device.type == "cuda" and model is not None:
+            self._discover_model_devices(model)
         if self.measure_memory or self.measure_latency:
             self._synchronize()
         if self.measure_memory:
-            torch.cuda.reset_peak_memory_stats(self.device)
-        self._generation_start = time()
+            self.baseline_memory_usage = self._sum_cuda_stat(torch.cuda.memory_allocated)
+            self.baseline_reserved_memory = self._sum_cuda_stat(torch.cuda.memory_reserved)
+            self._reset_peak_stats()
+            if model is not None:
+                self._model_hook = model.register_forward_hook(self._record_cache, with_kwargs=True)
+        self._generation_start = perf_counter()
 
     def __call__(self, input_ids, scores):
         # Transformers invokes logits processors after the initial forward pass
@@ -102,14 +223,15 @@ class GenerationPhaseTracker(LogitsProcessor):
         if self._decoding_start is None:
             if self.measure_memory or self.measure_latency:
                 self._synchronize()
-            boundary_time = time()
+            boundary_time = perf_counter()
             if self.measure_latency:
                 self.prefill_time = boundary_time - self._generation_start
             if self.measure_memory:
-                self.prefill_memory_usage = torch.cuda.max_memory_allocated(self.device) / 1024**3
+                self.prefill_memory_usage = self._sum_cuda_stat(torch.cuda.max_memory_allocated)
+                self.prefill_reserved_memory = self._sum_cuda_stat(torch.cuda.max_memory_reserved)
                 # The current allocation (model + compressed prompt cache) becomes
                 # decoding's baseline; the earlier transient prefill peak is cleared.
-                torch.cuda.reset_peak_memory_stats(self.device)
+                self._reset_peak_stats()
             self._decoding_start = boundary_time
         return scores
 
@@ -117,7 +239,7 @@ class GenerationPhaseTracker(LogitsProcessor):
         """Finish immediately after ``model.generate`` and return phase metrics."""
         if self.measure_memory or self.measure_latency:
             self._synchronize()
-        finish_time = time()
+        finish_time = perf_counter()
 
         # A logits processor should always run for generation. Keep a safe fallback
         # for unusual model implementations that return before applying processors.
@@ -126,19 +248,39 @@ class GenerationPhaseTracker(LogitsProcessor):
             if self.measure_latency:
                 self.prefill_time = finish_time - self._generation_start
             if self.measure_memory:
-                self.prefill_memory_usage = torch.cuda.max_memory_allocated(self.device) / 1024**3
-                torch.cuda.reset_peak_memory_stats(self.device)
+                self.prefill_memory_usage = self._sum_cuda_stat(torch.cuda.max_memory_allocated)
+                self.prefill_reserved_memory = self._sum_cuda_stat(torch.cuda.max_memory_reserved)
+                self._reset_peak_stats()
 
         if self.measure_latency:
             self.decoding_time = finish_time - self._decoding_start
         if self.measure_memory:
-            self.decoding_memory_usage = torch.cuda.max_memory_allocated(self.device) / 1024**3
+            self.decoding_memory_usage = self._sum_cuda_stat(torch.cuda.max_memory_allocated)
+            self.decoding_reserved_memory = self._sum_cuda_stat(torch.cuda.max_memory_reserved)
+            self.peak_memory_usage = max(self.prefill_memory_usage, self.decoding_memory_usage)
+            self.peak_reserved_memory = max(self.prefill_reserved_memory, self.decoding_reserved_memory)
+
+        if self._model_hook is not None:
+            self._model_hook.remove()
+            self._model_hook = None
 
         return {
-            "generation_phase_metrics_version": 1,
+            "generation_phase_metrics_version": 2,
+            "memory_profile_devices": [str(profile_device) for profile_device in self.devices],
             "prefill_memory_usage": self.prefill_memory_usage,
             "decoding_memory_usage": self.decoding_memory_usage,
-            "memory_usage": max(self.prefill_memory_usage, self.decoding_memory_usage),
+            "memory_usage": self.peak_memory_usage,
+            "baseline_memory_usage": self.baseline_memory_usage,
+            "peak_memory_usage": self.peak_memory_usage,
+            "peak_memory_above_baseline": max(0.0, self.peak_memory_usage - self.baseline_memory_usage),
+            "baseline_reserved_memory": self.baseline_reserved_memory,
+            "peak_reserved_memory": self.peak_reserved_memory,
+            "peak_reserved_memory_above_baseline": max(
+                0.0, self.peak_reserved_memory - self.baseline_reserved_memory
+            ),
+            "prefill_cache_memory": self.prefill_cache_memory,
+            "peak_cache_memory": self.peak_cache_memory,
+            "final_cache_memory": self.final_cache_memory,
             "prefill_time": self.prefill_time,
             "decoding_time": self.decoding_time,
             "total_time": self.prefill_time + self.decoding_time,
@@ -391,10 +533,17 @@ def evaluate(
     result_dir : str, optional
         Directory for result JSONL and score JSON files. Defaults to reason/results.
     measure_memory : bool, optional
-        Whether to measure separate prefill and decoding peak GPU allocations, by default True
+        Whether to profile peak GPU allocation/reservation and actual KV-cache storage, by default True
     measure_latency : bool, optional
         Whether to measure separate full-phase prefill and decoding wall times, by default True
     """
+
+    run_start = perf_counter()
+    dataset_ingestion_time = 0.0
+    model_load_time = 0.0
+    evaluation_loop_time = 0.0
+    scoring_time = 0.0
+    execution_mode = "loaded_existing_results"
 
     # Fire may pass boolean args as strings ("true"/"false") — normalize them
     def _to_bool(v):
@@ -532,11 +681,13 @@ def evaluate(
         logger.warning(f"Model responses already exist at {save_filename}")
         print(f"Model responses already exist. Loading responses from {save_filename} and evaluating metrics")
     else:
+        execution_mode = "full_evaluation"
         # Open file for incremental writing (append mode)
         # Clear the file first if it exists
         if save_filename.exists():
             save_filename.unlink()
         # Load datasetf
+        dataset_ingestion_start = perf_counter()
         ds = load_reason_dataset(hf_name, data_dir, data_split)
         if num_samples > 0:
             assert num_samples <= len(ds), f"num_samples {num_samples} is larger than the dataset size {len(ds)}"
@@ -558,6 +709,7 @@ def evaluate(
             ds = ds.select(range(block_start, block_end))
             evaluated_sample_start = block_start + 1
             evaluated_sample_end = block_end
+        dataset_ingestion_time = perf_counter() - dataset_ingestion_start
 
         # Load press
         if press_name not in PRESS_DICT:
@@ -623,6 +775,7 @@ def evaluate(
                 "attn_implementation": "eager",
             }
         
+        model_load_start = perf_counter()
         if "SeerAttention" in model_name:
             seer_model_cls = SeerDecodingQwen2ForCausalLM or SeerDecodingQwen3ForCausalLM
             if seer_model_cls is None:
@@ -661,6 +814,7 @@ def evaluate(
                 **attention_config
             )
             tensor_device = _resolve_tensor_device(model)
+        model_load_time = perf_counter() - model_load_start
         
         # Set pad token to eos token if not already set (required for generation)
         if tokenizer.pad_token is None:
@@ -682,6 +836,7 @@ def evaluate(
 
         # Run generation on each context of the dataset
         # Results are written incrementally, so we don't need to store them in memory
+        evaluation_loop_start = perf_counter()
         for i, example in tqdm(enumerate(ds), total=len(ds)):
             # Aggressive memory cleanup at the START of each sample to prevent accumulation
             import gc
@@ -735,7 +890,7 @@ def evaluate(
                 # Initialize input_token_ids for potential use in tracking (though tracking is skipped)
                 input_token_ids = inputs["input_ids"][0].tolist()
                 
-                phase_tracker.start()
+                phase_tracker.start(model)
                 outputs = model.generate(
                     inputs["input_ids"],
                     attention_mask=inputs["attention_mask"],
@@ -803,7 +958,7 @@ def evaluate(
                 press_context = press(model) if press is not None and not isinstance(press, NonePress) else contextlib.nullcontext()
                 
                 with press_context:
-                    phase_tracker.start()
+                    phase_tracker.start(model)
                     outputs = model.generate(
                         inputs["input_ids"],
                         attention_mask=inputs["attention_mask"],
@@ -873,6 +1028,17 @@ def evaluate(
                     "memory_usage": phase_metrics["memory_usage"],
                     "prefill_memory_usage": phase_metrics["prefill_memory_usage"],
                     "decoding_memory_usage": phase_metrics["decoding_memory_usage"],
+                    "baseline_memory_usage": phase_metrics["baseline_memory_usage"],
+                    "peak_memory_usage": phase_metrics["peak_memory_usage"],
+                    "peak_memory_above_baseline": phase_metrics["peak_memory_above_baseline"],
+                    "baseline_reserved_memory": phase_metrics["baseline_reserved_memory"],
+                    "peak_reserved_memory": phase_metrics["peak_reserved_memory"],
+                    "peak_reserved_memory_above_baseline": phase_metrics[
+                        "peak_reserved_memory_above_baseline"
+                    ],
+                    "prefill_cache_memory": phase_metrics["prefill_cache_memory"],
+                    "peak_cache_memory": phase_metrics["peak_cache_memory"],
+                    "final_cache_memory": phase_metrics["final_cache_memory"],
                     "execution_time": phase_metrics["total_time"],
                 }
             )
@@ -1007,8 +1173,8 @@ def evaluate(
 
             print(
                 f"✅ [{i+1}/{len(ds)}] Saved result for question {i+1} to {save_filename.name} "
-                f"(Prefill memory: {phase_metrics['prefill_memory_usage']:.2f} GB, "
-                f"decoding memory: {phase_metrics['decoding_memory_usage']:.2f} GB)"
+                f"(GPU peak above baseline: {phase_metrics['peak_memory_above_baseline']:.2f} GB, "
+                f"peak KV cache: {phase_metrics['peak_cache_memory']:.2f} GB)"
             )
             
             # Additional aggressive memory cleanup every 3 samples to prevent accumulation
@@ -1039,6 +1205,7 @@ def evaluate(
                 gc.collect()  # Second pass
                 print(f"   🧹 Aggressive memory cleanup after {i+1} samples")
 
+        evaluation_loop_time = perf_counter() - evaluation_loop_start
         print(f"\n✅ All results saved to {save_filename}")
     # end of the if save_filename.exists()
 
@@ -1057,8 +1224,10 @@ def evaluate(
             evaluated_sample_end = len(save_obj)
 
     # Calculate metrics
+    scoring_start = perf_counter()
     scorer = SCORER_DICT[dataset]
     metrics = scorer(extracted_answers, gt_answers)
+    scoring_time = perf_counter() - scoring_start
 
     # Add average compression ratio
     avg_compression = sum([obj["compression_ratio"] for obj in save_obj]) / len(save_obj)
@@ -1087,7 +1256,7 @@ def evaluate(
     if measure_memory and save_obj:
         metrics["avg_memory_usage_gb"] = sum([obj.get("memory_usage", 0.0) for obj in save_obj]) / len(save_obj)
         metrics["max_memory_usage_gb"] = max([obj.get("memory_usage", 0.0) for obj in save_obj])
-        if all(obj.get("generation_phase_metrics_version") == 1 for obj in save_obj):
+        if all(obj.get("generation_phase_metrics_version", 0) >= 1 for obj in save_obj):
             metrics["avg_prefill_memory_usage_gb"] = sum(
                 obj["prefill_memory_usage"] for obj in save_obj
             ) / len(save_obj)
@@ -1100,6 +1269,36 @@ def evaluate(
             metrics["max_decoding_memory_usage_gb"] = max(
                 obj["decoding_memory_usage"] for obj in save_obj
             )
+        if all(obj.get("generation_phase_metrics_version", 0) >= 2 for obj in save_obj):
+            metrics["avg_baseline_memory_usage_gb"] = sum(
+                obj["baseline_memory_usage"] for obj in save_obj
+            ) / len(save_obj)
+            metrics["peak_gpu_memory_usage_gb"] = max(obj["peak_memory_usage"] for obj in save_obj)
+            metrics["peak_gpu_memory_above_baseline_gb"] = max(
+                obj["peak_memory_above_baseline"] for obj in save_obj
+            )
+            metrics["peak_gpu_reserved_memory_gb"] = max(
+                obj["peak_reserved_memory"] for obj in save_obj
+            )
+            metrics["peak_gpu_reserved_memory_above_baseline_gb"] = max(
+                obj["peak_reserved_memory_above_baseline"] for obj in save_obj
+            )
+            metrics["avg_prefill_cache_memory_gb"] = sum(
+                obj["prefill_cache_memory"] for obj in save_obj
+            ) / len(save_obj)
+            metrics["max_prefill_cache_memory_gb"] = max(
+                obj["prefill_cache_memory"] for obj in save_obj
+            )
+            metrics["avg_peak_cache_memory_gb"] = sum(
+                obj["peak_cache_memory"] for obj in save_obj
+            ) / len(save_obj)
+            metrics["peak_cache_memory_gb"] = max(obj["peak_cache_memory"] for obj in save_obj)
+            metrics["avg_final_cache_memory_gb"] = sum(
+                obj["final_cache_memory"] for obj in save_obj
+            ) / len(save_obj)
+            metrics["max_final_cache_memory_gb"] = max(
+                obj["final_cache_memory"] for obj in save_obj
+            )
     
     # Add latency metrics if measured
     if measure_latency and save_obj:
@@ -1110,7 +1309,7 @@ def evaluate(
     if (
         measure_latency
         and save_obj
-        and all(obj.get("generation_phase_metrics_version") == 1 for obj in save_obj)
+        and all(obj.get("generation_phase_metrics_version", 0) >= 1 for obj in save_obj)
     ):
         import numpy as np
         
@@ -1173,8 +1372,29 @@ def evaluate(
     metrics["measure_memory"] = measure_memory
     metrics["measure_latency"] = measure_latency
     metrics["result_dir"] = str(save_dir)
-    if save_obj and all(obj.get("generation_phase_metrics_version") == 1 for obj in save_obj):
-        metrics["generation_phase_metrics_version"] = 1
+    if measure_memory:
+        metrics["memory_profile_version"] = 1
+        metrics["memory_profile_scope"] = "all_model_cuda_devices"
+        metrics["memory_profile_devices"] = (
+            save_obj[0].get("memory_profile_devices", [str(torch.device(tensor_device))])
+            if save_obj
+            else [str(torch.device(tensor_device))]
+        )
+        metrics["memory_profile_units"] = "GiB"
+    if save_obj and all(obj.get("generation_phase_metrics_version", 0) >= 1 for obj in save_obj):
+        metrics["generation_phase_metrics_version"] = min(
+            obj["generation_phase_metrics_version"] for obj in save_obj
+        )
+
+    # Run-level wall times deliberately include work outside model.generate.
+    if measure_memory or measure_latency:
+        metrics["timing_scope"] = "evaluate_entry_through_scoring"
+        metrics["execution_mode"] = execution_mode
+        metrics["dataset_ingestion_time_seconds"] = dataset_ingestion_time
+        metrics["model_load_time_seconds"] = model_load_time
+        metrics["evaluation_loop_time_seconds"] = evaluation_loop_time
+        metrics["scoring_time_seconds"] = scoring_time
+        metrics["end_to_end_time_seconds"] = perf_counter() - run_start
 
     with open(str(score_filename), "w") as f:
         json.dump(metrics, f)

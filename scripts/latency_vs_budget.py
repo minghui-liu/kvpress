@@ -5,7 +5,14 @@ import matplotlib.pyplot as plt
 BASE_FONT_SIZE = 12
 plt.rcParams.update(
     {
+        # ACL/ARR font compliance: Computer Modern (matplotlib's bundled cmr10),
+        # embedded as Type 42 rather than DejaVu / Type 3.
         "font.family": "serif",
+        "font.serif": ["cmr10", "CMU Serif", "Computer Modern Roman"],
+        "mathtext.fontset": "cm",
+        "axes.unicode_minus": False,
+        "pdf.fonttype": 42,
+        "ps.fonttype": 42,
         "font.size": BASE_FONT_SIZE,
         "axes.labelsize": BASE_FONT_SIZE + 1,
         "xtick.labelsize": BASE_FONT_SIZE,
@@ -15,7 +22,6 @@ plt.rcParams.update(
     }
 )
 
-
 budgets = [128, 256, 384, 512]
 
 data = {
@@ -24,7 +30,7 @@ data = {
     "KNorm": [0.097, 0.100, 0.089, 0.053],
     "StreamingLLM": [0.107, 0.102, 0.084, 0.073],
     "SCOPE": [0.857, 0.853, 0.856, 0.855],
-    "RPC": [1.561, 1.561, 1.561, 1.561],
+    "RPC": [1.561, 1.560, 1.558, 1.562],
 }
 
 styles = {
@@ -52,7 +58,7 @@ def main():
         )
 
     ax.set_xlabel("Cache Budget")
-    ax.set_ylabel("Avg. Time per Token (ms)")
+    ax.set_ylabel("Compression Overhead\nper Token (ms)", linespacing=1.3)
     ax.set_xticks(budgets)
     ax.set_xlim(112, 528)
     ax.set_ylim(0, 1.9)

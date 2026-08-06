@@ -65,7 +65,8 @@ def load_metrics_rkvlsh(metrics_df: pd.DataFrame, dataset: str, model: str, max_
         & (metrics_df["Model"] == model)
         & (metrics_df["Max_Tokens"] == max_tokens)
     ]
-    return dict(zip(subset["Budget"].astype(int), subset["Memory_MB"].astype(float)))
+    memory_column = "Peak_Cache_Memory_MB" if "Peak_Cache_Memory_MB" in subset else "Memory_MB"
+    return dict(zip(subset["Budget"].astype(int), subset[memory_column].astype(float)))
 
 
 def compute_memory_saved(metrics_df: pd.DataFrame, eff_df: pd.DataFrame, dataset: str, model: str, max_tokens: int, large: bool) -> dict[str, dict[int, float]]:
@@ -119,7 +120,7 @@ def plot_case(metrics_df: pd.DataFrame, eff_df: pd.DataFrame, max_tokens: int, o
         ax.set_xlabel("Cache budget", fontsize=28, fontweight="bold")
         ax.tick_params(axis="both", which="major", labelsize=26)
         ax.grid(True, linestyle=":", alpha=0.5, linewidth=1.3)
-    axes[0].set_ylabel("Memory Saved\n(MB)", fontsize=28, fontweight="bold")
+    axes[0].set_ylabel("Peak KV Cache Memory Saved\n(MB)", fontsize=28, fontweight="bold")
     axes[1].legend(loc="best", fontsize=26, framealpha=0.95, edgecolor="black", fancybox=True)
     fig.tight_layout()
     plt.subplots_adjust(
@@ -173,7 +174,7 @@ def plot_case_2048(metrics_df: pd.DataFrame, eff_df: pd.DataFrame, output_path: 
         ax.tick_params(axis="both", which="major", labelsize=26)
         ax.grid(True, linestyle=":", alpha=0.5, linewidth=1.3)
 
-    axes[0, 0].set_ylabel("Memory Saved\n(MB)", fontsize=28, fontweight="bold")
+    axes[0, 0].set_ylabel("Peak KV Cache Memory Saved\n(MB)", fontsize=28, fontweight="bold")
     axes[1, 0].legend(loc="best", fontsize=26, framealpha=0.95, edgecolor="black", fancybox=True)
 
     fig.tight_layout()

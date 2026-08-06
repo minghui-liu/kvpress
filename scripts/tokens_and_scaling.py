@@ -55,24 +55,24 @@ MATH_TOKENS = {
 
 # Middle panel: GSM8K accuracy at [7B, 14B].
 GSM8K_ACC = {
-    "Full":         [0.80, 0.84],   # 7B revised to 0.80
+    "Full":         [0.80, 0.84],
     "SCOPE":        [0.81, 0.85],   # extracted
     "RPC":          [0.79, 0.86],   # extracted
-    "H2O":          [0.57, 0.77],
-    "SnapKV-D":     [0.51, 0.73],
-    "StreamingLLM": [0.33, 0.54],
-    "KNorm":        [0.06, 0.07],
+    "H2O":          [0.48, 0.77],
+    "SnapKV-D":     [0.38, 0.73],
+    "StreamingLLM": [0.20, 0.54],
+    "KNorm":        [0.03, 0.07],
 }
 
 # Right panel: MATH-500 accuracy at [7B, 14B].
 MATH_ACC = {
     "Full":         [0.61, 0.68],
-    "SCOPE":        [0.57, 0.65],   # extracted
-    "RPC":          [0.59, 0.68],   # extracted
-    "H2O":          [0.37, 0.52],
-    "SnapKV-D":     [0.21, 0.46],
-    "StreamingLLM": [0.17, 0.30],
-    "KNorm":        [0.03, 0.005],
+    "SCOPE":        [0.64, 0.65],   # extracted
+    "RPC":          [0.65, 0.68],   # extracted
+    "H2O":          [0.32, 0.52],
+    "SnapKV-D":     [0.12, 0.46],
+    "StreamingLLM": [0.09, 0.30],
+    "KNorm":        [0.01, 0.005],
 }
 
 X = [0, 1]              # 7B, 14B
