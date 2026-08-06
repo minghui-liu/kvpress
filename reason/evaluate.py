@@ -513,6 +513,8 @@ def evaluate(
         key Channel Compression ratio for the channel press, by default 0.5
     enable_qualitative_analysis : bool, optional
         Enable qualitative token retention/eviction analysis for RKV-LSH, by default False
+    snapkv_window_size : int, optional
+        Recent/observation window size for H2O, SnapKV, and PyramidKV, by default 64
     scope_decoding_cache_budget : int, optional
         Decoding-phase cache budget for SCOPE (0 disables decoding-phase compression), by default 0
     scope_compress_interval : int, optional
@@ -638,7 +640,7 @@ def evaluate(
             "__".join([dataset, data_dir if data_dir else "", model_name.replace("/", "--"), press_name, f"int{n_bits}", f"max_new_tokens{max_new_tokens}"])
             + ".jsonl"
         )
-    elif press_name in ("snapkv", "snapkv_press", "pyramidkv"):
+    elif press_name in ("h2o", "snapkv", "snapkv_press", "pyramidkv"):
         save_filename = save_dir / (
             "__".join([dataset, data_dir if data_dir else "", model_name.replace("/", "--"), press_name, f"budget{cache_budget}", f"window{snapkv_window_size}", f"max_new_tokens{max_new_tokens}"])
             + ".jsonl"
@@ -730,7 +732,7 @@ def evaluate(
             press.n_bits = n_bits
             press.cache_budget = 0  # use n_bits directly, not budget-derived bits
 
-        if press_name in ("snapkv", "snapkv_press", "pyramidkv") and press is not None:
+        if press_name in ("h2o", "snapkv", "snapkv_press", "pyramidkv") and press is not None:
             press.window_size = snapkv_window_size
 
         if press_name=="rkvlsh" and press is not None:
@@ -1349,6 +1351,8 @@ def evaluate(
     metrics["temperature"] = temperature
     metrics["top_p"] = top_p
     metrics["run_tag"] = run_tag
+    if press_name in ("h2o", "snapkv", "snapkv_press", "pyramidkv"):
+        metrics["window_size"] = snapkv_window_size
     if press_name=="rkvlsh":
         metrics["n_hash_buckets"] = n_hash_buckets
         metrics["lam"] = lam

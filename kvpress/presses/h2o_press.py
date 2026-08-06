@@ -17,17 +17,22 @@ logger = logging.getLogger(__name__)
 @dataclass
 class H2OPress(ScorerPress):
     """
-    The h2o score is defined as the average attention weight over all prompt tokens
+    The H2O score is defined as the average attention weight over all prompt tokens.
+    The cache budget is divided between heavy hitters and an always-retained
+    window of the most recent tokens, as in the original H2O policy.
     Requires output_attentions=True and attn_implementation="eager" to have access to attentions
     This approach is a faithful implementation of H2O (https://arxiv.org/abs/2306.14048).
     """
 
     cache_budget: int = 0
+    window_size: int = 64
     output_attentions: bool = True
     attn_csv_path: str = "attn_loss.csv"
     prune_step: int = 0
 
     def __post_init__(self):
+        if self.window_size < 0:
+            raise ValueError("window_size must be non-negative")
         if not self.output_attentions:
             logger.warning(
                 "Model will not return attentions in its output to save memory. "
@@ -62,6 +67,30 @@ class H2OPress(ScorerPress):
         layer_key = self._layer_state_key(module)
         self.acc_attn_by_layer[layer_key] = acc_attn
         self.n_tokens_in_sum_by_layer[layer_key] = n_tokens_in_sum
+
+    def _select_heavy_and_recent(self, scores: torch.Tensor) -> torch.Tensor:
+        """Select heavy hitters from the past plus a fixed recent window."""
+        kv_len = scores.shape[-1]
+        keep_count = min(self.cache_budget, kv_len)
+        recent_count = min(self.window_size, keep_count)
+        heavy_count = keep_count - recent_count
+
+        selected = []
+        if heavy_count:
+            past_end = kv_len - recent_count
+            heavy_indices = scores[..., :past_end].topk(heavy_count, dim=-1).indices
+            selected.append(heavy_indices)
+        if recent_count:
+            recent_indices = torch.arange(
+                kv_len - recent_count,
+                kv_len,
+                device=scores.device,
+                dtype=torch.long,
+            )
+            recent_indices = recent_indices.view(1, 1, -1).expand(*scores.shape[:-1], -1)
+            selected.append(recent_indices)
+
+        return torch.cat(selected, dim=-1)
 
     def score(
         self,
@@ -114,8 +143,9 @@ class H2OPress(ScorerPress):
   
         # Compute scores
         scores = self.score(module, hidden_states, keys, values, attentions, True, kwargs)
-        # Get indices of KV pairs with the lowest scores
-        indices = scores.topk(self.cache_budget, dim=-1).indices # bsz, num_key_value_heads, cache_budget
+        indices = self._select_heavy_and_recent(scores)
+        if getattr(module, "layer_idx", 0) == 0:
+            self.track_retained_cache_positions(q_len, indices[0, 0].detach().cpu().tolist())
 
         # Prune keys and values
         kv_indices = indices.unsqueeze(-1).expand(-1, -1, -1, module.head_dim) # bsz, num_key_value_heads, cache_budget, head_dim
@@ -173,8 +203,7 @@ class H2OPress(ScorerPress):
 
         # Compute scores
         scores = self.score(module, hidden_states, keys, values, attentions, False, kwargs)
-        # Get indices of KV pairs with the lowest scores
-        indices = scores.topk(self.cache_budget, dim=-1).indices
+        indices = self._select_heavy_and_recent(scores)
 
         # Track token retention/eviction at first layer only
         if layer_idx == 0 and self.input_tokens is not None:
