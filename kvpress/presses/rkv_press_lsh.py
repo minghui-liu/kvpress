@@ -444,7 +444,7 @@ class RKVLSHPress(ScorerPress):
             final_scores = scores
         else:
             # Combination of both
-            final_scores = self.lam * scores + (1 - self.lam) * redundancy
+            final_scores = self.lam * scores - (1 - self.lam) * redundancy
 
         # Store component scores for qualitative analysis
         if self.enable_qualitative_analysis:
