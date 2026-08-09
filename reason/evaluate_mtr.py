@@ -289,9 +289,10 @@ def make_press(
         press.cache_budget = 0
     if press_name in ("snapkv", "snapkv_press", "pyramidkv"):
         press.window_size = snapkv_window_size
+    if press_name in ("rkv", "rkvlsh"):
+        press.lam = lam
     if press_name == "rkvlsh":
         press.n_hash_buckets = n_hash_buckets
-        press.lam = lam
         press.initialize_buckets(device=device)
     if press_name == "scope":
         press.window_size = snapkv_window_size

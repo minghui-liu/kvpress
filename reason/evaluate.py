@@ -735,9 +735,10 @@ def evaluate(
         if press_name in ("h2o", "snapkv", "snapkv_press", "pyramidkv") and press is not None:
             press.window_size = snapkv_window_size
 
+        if press_name in ("rkv", "rkvlsh") and press is not None:
+            press.lam = lam
         if press_name=="rkvlsh" and press is not None:
             press.n_hash_buckets=n_hash_buckets
-            press.lam = lam
             press.initialize_buckets(device=tensor_device)
             # Enable bucket tracking if requested
             if track_buckets:
@@ -1353,9 +1354,10 @@ def evaluate(
     metrics["run_tag"] = run_tag
     if press_name in ("h2o", "snapkv", "snapkv_press", "pyramidkv"):
         metrics["window_size"] = snapkv_window_size
+    if press_name in ("rkv", "rkvlsh"):
+        metrics["lam"] = lam
     if press_name=="rkvlsh":
         metrics["n_hash_buckets"] = n_hash_buckets
-        metrics["lam"] = lam
     if press_name == "scope":
         metrics["scope_decoding_cache_budget"] = scope_decoding_cache_budget
         metrics["scope_compress_interval"] = scope_compress_interval
