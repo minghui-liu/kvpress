@@ -451,7 +451,7 @@ def evaluate(
     compression_ratio: float = 0.1,
     key_channel_compression_ratio: float = 0.5,
     n_hash_buckets: int = 6,
-    lam:float=0.1,
+    lam: float = 0.1,
     n_bits: int = 4,
     snapkv_window_size: int = 64,
     scope_decoding_cache_budget: int = 0,
@@ -511,6 +511,8 @@ def evaluate(
         Whether to skip existing files, by default True
     key_channel_compression_ratio : float, optional
         key Channel Compression ratio for the channel press, by default 0.5
+    lam : float, optional
+        Weight of attention importance in the RKV/RKV-LSH score; redundancy uses weight ``1 - lam``, by default 0.1
     enable_qualitative_analysis : bool, optional
         Enable qualitative token retention/eviction analysis for RKV-LSH, by default False
     snapkv_window_size : int, optional

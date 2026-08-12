@@ -26,6 +26,7 @@ class RKVPress(ScorerPress):
     # compression_ratio: float = 0.0
     window_size: int = 8 # number of observation tokens always kept in the cache
     kernel_size: int = 5
+    lam: float = 0.1
     attn_csv_path: str = "attn_loss.csv"
     prune_step: int = 0
 
@@ -131,7 +132,7 @@ class RKVPress(ScorerPress):
         redundency = keys_similarity.mean(dim=-1)  # Average over the key dimension
         redundency = F.softmax(redundency, dim=-1, dtype=torch.float32).to(scores.dtype)
 
-        scores = 0.1 * scores - 0.9 * redundency
+        scores = self.lam * scores - (1 - self.lam) * redundency
         # Add back the observation window. Use max score to make sure the window is not pruned.
         scores = F.pad(scores, (0, self.window_size), value=scores.max().item())
         return scores
