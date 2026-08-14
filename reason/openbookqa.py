@@ -1,4 +1,7 @@
 
+from answer_grading import accuracy_from_comparator, choice_answers_equal
+
+
 openbookqa_prompt = "Solve the problem step by step. Answer with the answer choice label and wrap your final answer in \"\\boxed{}\"."
 
 
@@ -21,14 +24,9 @@ def accuracy(predictions, answers):
     """
     Calculate accuracy of predictions.
     """
-    correct = 0
-    total = len(predictions)
- 
-    for prediction, answer in zip(predictions, answers):
-        if prediction.lower() == answer.lower():
-            correct += 1
-
-    return correct / total if total > 0 else 0.0
+    return accuracy_from_comparator(
+        predictions, answers, lambda prediction, answer: choice_answers_equal(prediction, answer, max_choices=4)
+    )
     
 
 def openbookqa_scorer(predictions, answers):

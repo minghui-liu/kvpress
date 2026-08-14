@@ -8,6 +8,8 @@ import argparse
 from pathlib import Path
 from typing import Optional
 
+from answer_grading import numeric_answers_equal
+
 
 def extract_number_after_hash(response: str) -> Optional[str]:
     """
@@ -17,9 +19,9 @@ def extract_number_after_hash(response: str) -> Optional[str]:
     if not response:
         return None
     
-    # Look for #### followed by optional whitespace and then a number
-    # Pattern: #### followed by whitespace and then digits (possibly with decimals)
-    pattern = r'####\s*(\d+(?:\.\d+)?)'
+    # Preserve the complete answer expression; comparison handles currencies,
+    # signs, fractions, decimals, scientific notation, and thousands separators.
+    pattern = r'####\s*([^\n]+)'
     match = re.search(pattern, response)
     
     if match:
@@ -61,8 +63,7 @@ def check_answer_match(jsonl_file: Path, output_file: Optional[Path] = None):
                     match_status = "NO_PATTERN"
                     is_match = False
                 else:
-                    # Compare with ground truth (both as strings, case-insensitive)
-                    is_match = extracted_number.strip() == gt_answer.strip()
+                    is_match = numeric_answers_equal(extracted_number, gt_answer)
                     match_status = "MATCH" if is_match else "MISMATCH"
                     if is_match:
                         matched += 1
@@ -72,6 +73,7 @@ def check_answer_match(jsonl_file: Path, output_file: Optional[Path] = None):
                     'question': question[:100] + '...' if len(question) > 100 else question,
                     'gt_answer': gt_answer,
                     'extracted_number': extracted_number,
+                    'response_preview': response[:50],
                     'status': match_status,
                     'match': is_match
                 }
@@ -122,16 +124,16 @@ def check_answer_match(jsonl_file: Path, output_file: Optional[Path] = None):
         # Print first few mismatches
         mismatches = [r for r in results if r['status'] == 'MISMATCH']
         if mismatches:
-            print(f"\nFirst 5 mismatches:")
+            print("\nFirst 5 mismatches:")
             for r in mismatches[:5]:
                 print(f"  Line {r['line']}: GT={r['gt_answer']}, Extracted={r['extracted_number']}")
         
         # Print first few with no pattern
         no_pattern = [r for r in results if r['status'] == 'NO_PATTERN']
         if no_pattern:
-            print(f"\nFirst 5 with no #### pattern:")
+            print("\nFirst 5 with no #### pattern:")
             for r in no_pattern[:5]:
-                print(f"  Line {r['line']}: GT={r['gt_answer']}, Response preview: {response[:50] if 'response' in locals() else 'N/A'}...")
+                print(f"  Line {r['line']}: GT={r['gt_answer']}, Response preview: {r['response_preview']}...")
     
     return summary, results
 
@@ -180,4 +182,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

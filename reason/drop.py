@@ -4,12 +4,18 @@ import string
 import numpy as np
 from scipy.optimize import linear_sum_assignment
 
+from answer_grading import extract_final_answer, parse_numeric_answer
+
 
 drop_prompt = 'Solve the problem step by step. Wrap your final answer in "\\boxed{}".'
 
 
 def drop_formatter(example):
-    """Format a DROP example while preserving its possibly multi-span answer."""
+    """Format DROP and preserve its flattened alternative human annotations.
+
+    ``ucinlp/drop`` stores the original answer plus validated answers in one
+    flat ``spans`` list. They are alternatives, not spans that must all match.
+    """
     input_text = f"Passage:\n{example['passage']}\nQuestion:\n{example['question']}\n{drop_prompt}"
     answer_spans = example["answers_spans"]["spans"]
     if not isinstance(answer_spans, list):
@@ -33,7 +39,13 @@ def _is_number(text):
 
 
 def _normalize(text):
-    """Apply the normalization used by the official DROP evaluator."""
+    """Apply official DROP normalization plus exact numeric equivalence."""
+    numeric_value = parse_numeric_answer(text)
+    if numeric_value is not None:
+        if numeric_value.denominator == 1:
+            return str(numeric_value.numerator)
+        return f"{numeric_value.numerator}/{numeric_value.denominator}"
+
     normalized_tokens = []
     for token in re.split(r" |－|-", str(text).lower()):
         if not _is_number(token):
@@ -83,10 +95,27 @@ def drop_metrics(predicted, gold):
 
 
 def drop_scorer(predictions, answers):
-    """Aggregate DROP EM and F1; keep ``accuracy`` as a compatibility alias for EM."""
-    scores = [drop_metrics(prediction, answer) for prediction, answer in zip(predictions, answers)]
+    """Aggregate the best official-style DROP EM/F1 over gold annotations."""
+    if len(predictions) != len(answers):
+        raise ValueError(f"Predictions ({len(predictions)}) and answers ({len(answers)}) must have the same length")
+
+    scores = []
+    for prediction, gold_annotations in zip(predictions, answers):
+        alternatives = _coerce_spans(gold_annotations)
+        annotation_scores = [drop_metrics(prediction, alternative) for alternative in alternatives]
+        scores.append(
+            (
+                max(score[0] for score in annotation_scores),
+                max(score[1] for score in annotation_scores),
+            )
+        )
     if not scores:
         return {"accuracy": 0.0, "exact_match": 0.0, "f1": 0.0}
     exact_match = sum(score[0] for score in scores) / len(scores)
     f1 = sum(score[1] for score in scores) / len(scores)
     return {"accuracy": exact_match, "exact_match": exact_match, "f1": f1}
+
+
+def drop_extractor(response):
+    """Extract the answer requested by the DROP prompt."""
+    return extract_final_answer(response)

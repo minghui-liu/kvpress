@@ -16,8 +16,11 @@ Format:
 - Answer: Index or letter of correct answer
 """
 
+import hashlib
 import re
 from typing import Any, Dict, Optional, Tuple
+
+from answer_grading import accuracy_from_comparator, choice_answers_equal, extract_final_answer
 
 # Prompt for GPQA multiple choice questions
 gpqa_prompt = """
@@ -39,6 +42,10 @@ def _extract_gpqa_letter(text: str) -> Optional[str]:
     """
     if not text:
         return None
+
+    choice = extract_final_answer(text)
+    if choice != text:
+        text = choice
 
     boxed_match = re.search(r"\\boxed\{([A-D])\}", text, re.IGNORECASE)
     if boxed_match:
@@ -144,7 +151,8 @@ def gpqa_formatter(example: Dict[str, Any]) -> Tuple[str, str]:
 
         # Create deterministic shuffle based on question text
         shuffled_indices = list(range(4))
-        rng = random.Random(hash(question_text))
+        stable_seed = int.from_bytes(hashlib.sha256(question_text.encode("utf-8")).digest()[:8], "big")
+        rng = random.Random(stable_seed)
         rng.shuffle(shuffled_indices)
 
         # Apply shuffle
@@ -169,33 +177,37 @@ def gpqa_formatter(example: Dict[str, Any]) -> Tuple[str, str]:
     if answer_letter is None:
         # Extract correct answer from Answer field
         # Answer might be stored as letter (A/B/C/D) or index (0/1/2/3)
-        answer = example.get("Answer") or example.get("answer", "")
+        answer = example["Answer"] if "Answer" in example else example.get("answer", "")
 
         # Normalize answer to letter format
         if isinstance(answer, int):
             # If answer is index, convert to letter
+            if not 0 <= answer < 4:
+                raise ValueError(f"GPQA answer index is out of range: {answer}")
             answer_letter = chr(65 + answer)  # 0->A, 1->B, etc
         elif isinstance(answer, str):
             # If already a letter, keep it; if it's a number string, convert it
             answer = answer.strip().upper()
             if answer.isdigit():
-                answer_letter = chr(65 + int(answer))
+                answer_index = int(answer)
+                if not 0 <= answer_index < 4:
+                    raise ValueError(f"GPQA answer index is out of range: {answer!r}")
+                answer_letter = chr(65 + answer_index)
             elif len(answer) == 1 and answer in "ABCD":
                 answer_letter = answer
             else:
                 # If answer is the full text, try to match it to choices
                 if choices:
                     for i, choice in enumerate(choices):
-                        if answer.lower() == choice.lower():
+                        if answer.lower() == str(choice).lower():
                             answer_letter = chr(65 + i)
                             break
                     else:
-                        # Default to A if we can't match
-                        answer_letter = "A"
+                        raise ValueError(f"GPQA answer text does not match any choice: {answer!r}")
                 else:
-                    answer_letter = "A"
+                    raise ValueError(f"GPQA answer is not a valid choice label: {answer!r}")
         else:
-            answer_letter = "A"  # Default fallback
+            raise ValueError(f"GPQA answer is missing or has an unsupported type: {answer!r}")
 
     return formatted_question, answer_letter
 
@@ -221,38 +233,10 @@ def gpqa_evaluator(
     Returns:
         True if prediction matches ground truth, False otherwise
     """
-    if prediction is None or ground_truth is None:
-        return False
-
-    prediction_text = str(prediction)
-    ground_truth_text = str(ground_truth)
-
-    pred_letter = _extract_gpqa_letter(prediction_text)
-    if pred_letter is None:
-        candidate = prediction_text.strip().upper()
-        if len(candidate) == 1 and candidate in "ABCD":
-            pred_letter = candidate
-        else:
-            return False
-
-    gt_letter = ground_truth_text.strip().upper()
-    if gt_letter.isdigit() and 0 <= int(gt_letter) <= 3:
-        gt_letter = chr(65 + int(gt_letter))
-    elif len(gt_letter) == 1 and gt_letter in "ABCD":
-        pass
-    else:
-        gt_candidate = _extract_gpqa_letter(ground_truth_text)
-        if gt_candidate is not None:
-            gt_letter = gt_candidate
-        else:
-            gt_match = re.search(r"([A-D])", gt_letter, re.IGNORECASE)
-            if gt_match:
-                gt_letter = gt_match.group(1).upper()
-            else:
-                return False
-
-    # Compare
-    return pred_letter == gt_letter
+    normalized_gold = str(ground_truth).strip()
+    if normalized_gold in {"0", "1", "2", "3"}:
+        normalized_gold = chr(ord("A") + int(normalized_gold))
+    return choice_answers_equal(prediction, normalized_gold, max_choices=4)
 
 
 def gpqa_scorer(predictions: list, answers: list) -> Dict[str, float]:
@@ -266,17 +250,8 @@ def gpqa_scorer(predictions: list, answers: list) -> Dict[str, float]:
     Returns:
         Dictionary with accuracy score
     """
-    if len(predictions) != len(answers):
-        raise ValueError(
-            f"Predictions ({len(predictions)}) and answers ({len(answers)}) must have same length"
-        )
-
-    correct = sum(
-        1 for pred, ans in zip(predictions, answers)
-        if gpqa_evaluator(pred, ans)
-    )
-
-    accuracy = correct / len(predictions) if predictions else 0.0
+    accuracy = accuracy_from_comparator(predictions, answers, gpqa_evaluator)
+    correct = int(accuracy * len(predictions))
 
     return {
         "accuracy": accuracy,

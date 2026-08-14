@@ -42,7 +42,7 @@ from aime25 import aime25_formatter, aime25_scorer
 from aime24 import aime24_formatter, aime24_scorer
 from commonsenseqa import commonsenseqa_formatter, commonsenseqa_scorer
 from math500 import math500_formatter, math500_scorer
-from drop import drop_formatter, drop_scorer
+from drop import drop_extractor, drop_formatter, drop_scorer
 from reclor import reclor_formatter, reclor_scorer
 from gpqa import gpqa_formatter, gpqa_extractor, gpqa_scorer
 from gpqa_diamond import (
@@ -329,7 +329,7 @@ EXTRACTOR_DICT = {
     "aime24": default_extractor,
     "commonsenseqa": default_extractor,
     "math500": default_extractor,
-    "drop": default_extractor,
+    "drop": drop_extractor,
     "reclor": default_extractor,
     "gpqa": gpqa_extractor,
     "gpqa_diamond": gpqa_diamond_extractor,
@@ -350,6 +350,13 @@ SCORER_DICT = {
     "gpqa": gpqa_scorer,
     "gpqa_diamond": gpqa_diamond_scorer,
 }
+
+# Math-Verify performs its own answer extraction and is substantially more
+# reliable when it can inspect the full response (for example, multiple LaTeX
+# environments followed by a final boxed answer). Numeric scorers likewise
+# prioritize explicit final-answer markers before falling back to the last
+# numeric expression.
+RAW_RESPONSE_SCORING_DATASETS = {"gsm8k", "aime24", "aime25", "math500"}
 
 PRESS_DICT = {
     "knorm": KnormPress(),
@@ -1217,7 +1224,12 @@ def evaluate(
     # load the results and evaluate the metrics
     with open(str(save_filename), "r") as f:
         save_obj = [json.loads(line) for line in f.readlines()]
-    extracted_answers = [obj["extracted_answer"] for obj in save_obj]
+    extracted_answers = [
+        obj.get("response", obj["extracted_answer"])
+        if dataset in RAW_RESPONSE_SCORING_DATASETS
+        else obj["extracted_answer"]
+        for obj in save_obj
+    ]
     gt_answers = [obj["gt_answer"] for obj in save_obj]
 
     if save_obj:
