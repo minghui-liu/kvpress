@@ -56,7 +56,7 @@ CACHE_BUDGETS = [128,256,384,512] #1024
 LAMBDA = 0.1  # Match batch.sh (was 0.01)
 N_HASH_BUCKETS_LIST = [6]
 N_BITS = 4  # evaluate.py default, only used for turboquant filenames
-SNAPKV_WINDOW_SIZE = 64  # evaluate.py default, only used for snapkv/pyramidkv filenames
+SNAPKV_WINDOW_SIZE = 64  # evaluate.py default, used for h2o/snapkv/pyramidkv filenames
 RANDOM_SEED = 42  # Fixed across all runs/top_p values - only generation sampling varies
 
 TEMPERATURE = 0.6
@@ -162,13 +162,13 @@ def build_filenames(
         )
     elif press_name == "turboquant":
         stem = f"{dataset}____{model_file}__{press_name}__int{N_BITS}__max_new_tokens{max_new_tokens}"
-    elif press_name in ("snapkv", "snapkv_press", "pyramidkv"):
+    elif press_name in ("h2o", "snapkv", "snapkv_press", "pyramidkv"):
         stem = (
             f"{dataset}____{model_file}__{press_name}__"
             f"budget{cache_budget}__window{SNAPKV_WINDOW_SIZE}__max_new_tokens{max_new_tokens}"
         )
     else:
-        # Covers h2o, knorm, streaming_llm, scope, rpc, random, full, none
+        # Covers knorm, streaming_llm, scope, rpc, random, full, none
         stem = f"{dataset}____{model_file}__{press_name}__budget{cache_budget}__max_new_tokens{max_new_tokens}"
 
     # Suffixes: mirrors the trailing appends in evaluate.py (num_samples/fraction, seed, sampling, topp, run_tag)
@@ -233,6 +233,7 @@ def run_experiment(
         f"--random_seed={RANDOM_SEED}",
         f"--max_new_tokens={max_new_tokens}",
         f"--n_hash_buckets={n_hash_buckets}",
+        f"--snapkv_window_size={SNAPKV_WINDOW_SIZE}",
         f"--lam={LAMBDA}",
         f"--temperature={TEMPERATURE}",
         f"--top_p={top_p}",
