@@ -34,6 +34,7 @@ from kvpress.presses.rkv_press_lsh import RKVLSHPress
 from kvpress.presses.rpc_press import RPCPress
 from kvpress.presses.scope_press import SCOPEPress
 from kvpress.presses.turboquant_press import TurboQuantPress
+from kvpress.presses.zipcache_press import ZipCachePress
 
 # Patch the attention functions to support head-wise compression
 patch_attention_functions()
@@ -71,4 +72,5 @@ __all__ = [
     "RPCPress",
     "SCOPEPress",
     "TurboQuantPress",
+    "ZipCachePress",
 ]

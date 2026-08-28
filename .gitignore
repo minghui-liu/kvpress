@@ -174,3 +174,7 @@ cython_debug/
 *.md
 *.xlsx
 *.numbers
+/tests
+/scripts
+*.sh
+/evaluation

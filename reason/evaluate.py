@@ -30,6 +30,7 @@ try:
 except ImportError:
     SeerDecodingQwen3ForCausalLM = None
 from kvpress import BasePress, KeyRerotationPress, PerLayerCompressionPress
+from kvpress import ZipCachePress
 
 from utils import default_extractor
 from gsm8k import gsm8k_formatter, gsm8k_scorer
@@ -303,6 +304,19 @@ DATASET_DICT = {
     "gpqa_diamond": ("Idavidrein/gpqa", "gpqa_diamond", "train"),
 }
 
+# Accept the sweep/CLI spellings of dataset names that differ from the canonical
+# DATASET_DICT keys. Without this, e.g. `--dataset=commonsense_qa` (as emitted by
+# rerunall.sh) fails the assert below even though "commonsenseqa" is registered.
+DATASET_ALIASES = {
+    "commonsense_qa": "commonsenseqa",
+    "csqa": "commonsenseqa",
+    "openbook_qa": "openbookqa",
+    "obqa": "openbookqa",
+    "strategy_qa": "strategyqa",
+    "math_500": "math500",
+    "math-500": "math500",
+}
+
 FORMATTER_DICT = {
     "gsm8k": gsm8k_formatter,
     "folio": folio_formatter,
@@ -373,6 +387,7 @@ PRESS_DICT = {
     "full": FullPress(),
     "none": NonePress(),  # No-op press that does nothing
     "turboquant": TurboQuantPress(),
+    "zipcache": ZipCachePress(),
 }
 
 POSITION_RETENTION_TRACKING_PRESSES = {
@@ -460,6 +475,9 @@ def evaluate(
     n_hash_buckets: int = 6,
     lam: float = 0.1,
     n_bits: int = 4,
+    zipcache_high_bits: int = 4,
+    zipcache_low_bits: int = 2,
+    zipcache_salient_ratio: float = 0.1,
     snapkv_window_size: int = 64,
     scope_decoding_cache_budget: int = 0,
     scope_compress_interval: int = 32,
@@ -572,6 +590,7 @@ def evaluate(
     do_sampling = _to_bool(do_sampling)
     skip_existing = _to_bool(skip_existing)
 
+    dataset = DATASET_ALIASES.get(dataset, dataset)
     assert dataset in DATASET_DICT, f"No dataset found for {dataset}"
     assert dataset in SCORER_DICT, f"No scorer found for {dataset}"
     assert dataset_block_index >= 0, "dataset_block_index must be >= 0"
@@ -647,6 +666,11 @@ def evaluate(
     elif press_name == "turboquant":
         save_filename = save_dir / (
             "__".join([dataset, data_dir if data_dir else "", model_name.replace("/", "--"), press_name, f"int{n_bits}", f"max_new_tokens{max_new_tokens}"])
+            + ".jsonl"
+        )
+    elif press_name == "zipcache":
+        save_filename = save_dir / (
+            "__".join([dataset, data_dir if data_dir else "", model_name.replace("/", "--"), press_name, f"high{zipcache_high_bits}", f"low{zipcache_low_bits}", f"sal{int(round(zipcache_salient_ratio*100)):03d}", f"max_new_tokens{max_new_tokens}"])
             + ".jsonl"
         )
     elif press_name in ("h2o", "snapkv", "snapkv_press", "pyramidkv"):
@@ -740,6 +764,12 @@ def evaluate(
         if press_name == "turboquant" and press is not None:
             press.n_bits = n_bits
             press.cache_budget = 0  # use n_bits directly, not budget-derived bits
+        if press_name == "zipcache" and press is not None:
+            press.high_bits = zipcache_high_bits
+            press.low_bits = zipcache_low_bits
+            press.salient_ratio = zipcache_salient_ratio
+            # Budget is expressed through the bit mix, not by pruning tokens.
+            press.cache_budget = 0
 
         if press_name in ("h2o", "snapkv", "snapkv_press", "pyramidkv") and press is not None:
             press.window_size = snapkv_window_size
@@ -789,7 +819,15 @@ def evaluate(
         
         model_load_start = perf_counter()
         if "SeerAttention" in model_name:
-            seer_model_cls = SeerDecodingQwen2ForCausalLM or SeerDecodingQwen3ForCausalLM
+            # `A or B` picks A whenever A is merely importable, so a Qwen3-based
+            # SeerAttention checkpoint was silently loaded with the Qwen2 class.
+            # Choose on the checkpoint's own architecture instead.
+            _seer_cfg = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
+            _seer_arch = (getattr(_seer_cfg, "model_type", "") or "").lower()
+            if "qwen3" in _seer_arch:
+                seer_model_cls = SeerDecodingQwen3ForCausalLM or SeerDecodingQwen2ForCausalLM
+            else:
+                seer_model_cls = SeerDecodingQwen2ForCausalLM or SeerDecodingQwen3ForCausalLM
             if seer_model_cls is None:
                 raise ImportError(
                     "SeerAttention model requested, but `seer_attn` is not installed "

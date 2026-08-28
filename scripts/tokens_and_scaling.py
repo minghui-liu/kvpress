@@ -55,13 +55,13 @@ MATH_TOKENS = {
 
 # Middle panel: GSM8K accuracy at [7B, 14B].
 GSM8K_ACC = {
-    "Full":         [0.80, 0.84],
-    "SCOPE":        [0.81, 0.85],   # extracted
-    "RPC":          [0.79, 0.86],   # extracted
-    "H2O":          [0.48, 0.77],
-    "SnapKV-D":     [0.38, 0.73],
-    "StreamingLLM": [0.20, 0.54],
-    "KNorm":        [0.03, 0.07],
+    "Full":         [0.96, 0.84],
+    "SCOPE":        [0.94, 0.85],   # extracted
+    "RPC":          [0.94, 0.86],   # extracted
+    "H2O":          [0.72, 0.77],
+    "SnapKV-D":     [0.60, 0.73],
+    "StreamingLLM": [0.40, 0.54],
+    "KNorm":        [0.15, 0.07],
 }
 
 # Right panel: MATH-500 accuracy at [7B, 14B].
