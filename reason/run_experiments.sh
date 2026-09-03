@@ -15,6 +15,8 @@
 
 source activate base
 conda activate kvcache
+# Do not mix packages from ~/.local with this Conda environment.
+export PYTHONNOUSERSITE=1
 
 export HF_HOME='/nfshomes/minghui/scratch/.cache/huggingface'
 export HF_TOKEN=''

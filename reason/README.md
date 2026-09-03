@@ -8,9 +8,24 @@ This directory contains a set of scripts to evaluate the performance of differen
 - OpenbookQA ([allenai/openbookqa](https://huggingface.co/datasets/allenai/openbookqa))
 - MATH-500 ([HuggingFaceH4/MATH-500](https://huggingface.co/datasets/HuggingFaceH4/MATH-500))
 - AIME25 ([math-ai/aime25](https://huggingface.co/datasets/math-ai/aime25))
+- GPQA ([Idavidrein/gpqa](https://huggingface.co/datasets/Idavidrein/gpqa))
+- GPQA Diamond ([Idavidrein/gpqa](https://huggingface.co/datasets/Idavidrein/gpqa), config: `gpqa_diamond`)
 
 
 Please refer to the huggingface page and the original paper of each dataset for more information on how the Hugging Face dataset was generated.
+
+## Answer grading
+
+Answer grading is benchmark-aware; a single exact-string comparison or regex is not sufficient across these tasks.
+
+- GSM8K uses exact rational arithmetic after final-answer extraction. Equivalent forms such as `1/2`, `1 / 2`, `0.5`, and `0.500000` match, as do harmless currency, thousands-separator, scientific-notation, and unit variations. This extends the [official GSM8K final-answer convention](https://github.com/openai/grade-school-math), where the gold answer follows `####`.
+- AIME24 and AIME25 use the same exact numeric representation but require an integer result. Leading zeroes and integral decimal/fraction forms are equivalent. AIME24's dataset stores a full solution, so its formatter first extracts the boxed gold answer.
+- MATH-500 uses [Math-Verify](https://github.com/huggingface/Math-Verify): answer extraction, LaTeX normalization/parsing, conversion to SymPy, and symbolic/numeric equivalence. The original MATH evaluator only applied [string normalization](https://github.com/hendrycks/math/blob/main/modeling/math_equivalence.py); Math-Verify covers substantially more sets, intervals, equations, tuples, matrices, and equivalent expressions.
+- DROP reports exact match and token F1 using the [official DROP evaluator](https://github.com/allenai/allennlp-models/blob/main/allennlp_models/rc/tools/drop.py), with exact rational normalization added for numeric forms. The `ucinlp/drop` dataset flattens the original and validated annotations into one `answers_spans.spans` list, so the scorer takes the maximum metric over those alternative annotations rather than requiring every entry simultaneously.
+- CommonsenseQA, OpenBookQA, ReClor, LogiQA, GPQA, and GPQA-Diamond use strict choice accuracy while accepting an equivalent letter or one-based option number. GPQA raw zero-based gold indices are normalized before comparison.
+- StrategyQA and FOLIO use strict categorical accuracy with casing/format normalization. `yes`/`no` map to booleans, and `unknown`/`undetermined` map to FOLIO's `Uncertain` class.
+
+All scorers reject prediction/gold length mismatches instead of silently truncating with `zip`. Math scorers receive the full response so the parser can prioritize the last explicit or boxed answer. The implementation never executes model output with Python `eval`; unsupported or ambiguous expressions are marked incorrect rather than run as code.
 
 ## Installation
 Follow the instuction in the README file of the root folder of KVPress to install KVPress.

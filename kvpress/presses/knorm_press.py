@@ -14,6 +14,9 @@ from kvpress.presses.scorer_press import ScorerPress
 class KnormPress(ScorerPress):
     """Prune KV pairs with highest L2 norm of keys (https://arxiv.org/pdf/2406.11430)"""
 
+    attn_csv_path: str = "attn_loss.csv"
+    prune_step: int = 0
+
     def score(
         self,
         module: nn.Module,
@@ -25,3 +28,51 @@ class KnormPress(ScorerPress):
         kwargs,
     ) -> torch.Tensor:
         return -keys.norm(dim=-1)
+
+    def compress_decoding(
+        self,
+        module: nn.Module,
+        hidden_states: torch.Tensor,
+        keys: torch.Tensor,
+        values: torch.Tensor,
+        attentions: torch.Tensor,
+        kwargs: dict,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        kv_len = keys.shape[2]
+        layer_idx = getattr(module, "layer_idx", 0)
+        if self.cache_budget == 0:
+            if layer_idx == 0:
+                self.track_retained_cache_positions(kv_len, list(range(kv_len)))
+            return keys, values
+
+        if self.cache_budget >= kv_len:
+            if layer_idx == 0:
+                self.track_retained_cache_positions(kv_len, list(range(kv_len)))
+            return keys, values
+
+        # Compute scores with L2 norm (more negative = more important)
+        scores = self.score(module, hidden_states, keys, values, attentions, False, kwargs)
+        indices = scores.topk(self.cache_budget, dim=-1).indices  # [B, Hkv, K]
+        if layer_idx == 0:
+            self.track_retained_cache_positions(
+                kv_len, indices[0, 0].detach().cpu().tolist()
+            )
+        full_len = int(scores.shape[-1])
+        kept_len = int(indices.shape[2])
+
+
+        # Debug counts
+        # try:
+        #     print("---" * 10)
+        #     print(f"[DEBUG] (PRE) keys shape: {keys.shape}, values shape: {values.shape}")
+        #     full_len = scores.shape[-1]
+        #     kept_len = indices.shape[2]
+        #     print(f"[DEBUG] diff indices: {full_len - kept_len}")
+        # except Exception:
+        #     pass
+
+        # Gather pruned keys/values
+        kv_indices = indices.unsqueeze(-1).expand(-1, -1, -1, module.head_dim)
+        keys = keys.gather(2, kv_indices).contiguous()
+        values = values.gather(2, kv_indices).contiguous()
+        return keys, values

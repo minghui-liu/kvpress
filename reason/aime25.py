@@ -1,4 +1,7 @@
 
+from answer_grading import accuracy_from_comparator, numeric_answers_equal
+
+
 aime25_prompt = "\nSolve the problem step by step. Wrap your final answer in \"\\boxed{}\"."
 
 
@@ -16,14 +19,11 @@ def accuracy(predictions, answers):
     """
     Calculate accuracy of predictions.
     """
-    correct = 0
-    total = len(predictions)
-    
-    for prediction, answer in zip(predictions, answers):
-        if prediction == answer:
-            correct += 1
-
-    return correct / total if total > 0 else 0.0
+    return accuracy_from_comparator(
+        predictions,
+        answers,
+        lambda prediction, answer: numeric_answers_equal(prediction, answer, require_integer=True),
+    )
     
 
 def aime25_scorer(predictions, answers):

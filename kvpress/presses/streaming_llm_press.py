@@ -25,6 +25,9 @@ class StreamingLLMPress(ScorerPress):
     compression_ratio: float = 0.0
     cache_budget: int = 0
     n_sink: int = 4
+    attn_csv_path: str = "attn_loss.csv"
+    prune_step: int = 0
+    output_attentions: bool = True
 
     def score(
         self,
@@ -51,3 +54,38 @@ class StreamingLLMPress(ScorerPress):
             scores[:, :, -n_local:] = 1
 
         return scores
+
+    def compress_decoding(
+        self,
+        module: nn.Module,
+        hidden_states: torch.Tensor,
+        keys: torch.Tensor,
+        values: torch.Tensor,
+        attentions: torch.Tensor,
+        kwargs: dict,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        kv_len = keys.shape[2]
+        layer_idx = getattr(module, "layer_idx", 0)
+        if self.cache_budget == 0:
+            if layer_idx == 0:
+                self.track_retained_cache_positions(kv_len, list(range(kv_len)))
+            return keys, values
+
+        if self.cache_budget >= kv_len:
+            if layer_idx == 0:
+                self.track_retained_cache_positions(kv_len, list(range(kv_len)))
+            return keys, values
+
+        # Compute scores and select kept indices
+        scores = self.score(module, hidden_states, keys, values, attentions, False, kwargs)
+        indices = scores.topk(self.cache_budget, dim=-1).indices  # [B, Hkv, K]
+        if layer_idx == 0:
+            self.track_retained_cache_positions(
+                kv_len, indices[0, 0].detach().cpu().tolist()
+            )
+
+        # Gather pruned keys/values
+        kv_indices = indices.unsqueeze(-1).expand(-1, -1, -1, module.head_dim)
+        keys = keys.gather(2, kv_indices).contiguous()
+        values = values.gather(2, kv_indices).contiguous()
+        return keys, values

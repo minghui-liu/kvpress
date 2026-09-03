@@ -1,3 +1,8 @@
+#!/bin/bash
+
+# Keep an activated environment isolated from incompatible ~/.local packages.
+export PYTHONNOUSERSITE=1
+
 dataset="ruler"
 data_dir="4096"
 model="meta-llama/Meta-Llama-3.1-8B-Instruct"
